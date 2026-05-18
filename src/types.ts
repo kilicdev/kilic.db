@@ -1,5 +1,7 @@
 import { ConnectOptions, ClientSession } from "mongoose";
 
+export { KilicError } from "./errors";
+
 // ─────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────

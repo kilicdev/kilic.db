@@ -38,6 +38,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 const mongoose_1 = __importDefault(require("mongoose"));
 const fs = __importStar(require("fs"));
 const nodePath = __importStar(require("path"));
+const errors_1 = require("./errors");
 class KilicDB {
     _config = {};
     _cache = new Map();
@@ -144,14 +145,14 @@ class KilicDB {
                         return loaded;
                     }
                     catch (err) {
-                        throw new Error(`[kilic.db] Failed to load model '${modelName}' from ${filePath}: ${err?.message}`);
+                        throw new errors_1.KilicError(`Failed to load model '${modelName}' from ${filePath}: ${err?.message}`, "MODEL_LOAD_ERROR", err);
                     }
                 }
             }
         }
-        throw new Error(`[kilic.db] Model '${modelName}' not found.\n` +
+        throw new errors_1.KilicError(`Model '${modelName}' not found.\n` +
             `  → Ensure it is registered via mongoose.model() before use, OR\n` +
-            `  → Set 'path' in db.config() to your models directory.`);
+            `  → Set 'path' in db.config() to your models directory.`, "MODEL_NOT_FOUND");
     }
     _applyPopulate(query, populate) {
         if (!populate)
@@ -184,9 +185,9 @@ class KilicDB {
         const model = this._resolveModel(modelName);
         const filter = options.filter ?? (data.id ? { id: data.id } : null);
         if (!filter) {
-            throw new Error(`[kilic.db] create('${modelName}') requires a unique filter.\n` +
+            throw new errors_1.KilicError(`create('${modelName}') requires a unique filter.\n` +
                 `  → Either set data.id, or pass options.filter explicitly.\n` +
-                `  → Example: db.create("User", { email: "..." }, { filter: { email: "..." } })`);
+                `  → Example: db.create("User", { email: "..." }, { filter: { email: "..." } })`, "MISSING_FILTER");
         }
         const updatePayload = options.force
             ? { $set: data }
@@ -212,7 +213,7 @@ class KilicDB {
                 }
                 return existing ?? null;
             }
-            throw err;
+            (0, errors_1.handleError)(err);
         }
     }
     /**
@@ -228,7 +229,7 @@ class KilicDB {
         if (options.lean !== false)
             query = query.lean();
         query = this._applyPopulate(query, options.populate);
-        const doc = await query.exec();
+        const doc = await query.exec().catch(errors_1.handleError);
         return doc ?? null;
     }
     /**
@@ -243,9 +244,9 @@ class KilicDB {
     async update(modelName, data = {}, options = {}) {
         const model = this._resolveModel(modelName);
         if (!options.filter && !options.force) {
-            throw new Error(`[kilic.db] update('${modelName}') requires options.filter.\n` +
+            throw new errors_1.KilicError(`update('${modelName}') requires options.filter.\n` +
                 `  → Pass { filter: { id: "..." } } as the third argument.\n` +
-                `  → Or use { force: true } to update without a filter (matches first document).`);
+                `  → Or use { force: true } to update without a filter (matches first document).`, "MISSING_FILTER");
         }
         const filter = options.filter ?? {};
         // Auto-wrap plain objects in $set so users don't need to know Mongoose operators
@@ -267,7 +268,7 @@ class KilicDB {
         catch (err) {
             if (err?.code === 11000)
                 return false;
-            throw err;
+            (0, errors_1.handleError)(err);
         }
     }
     /**
@@ -294,7 +295,7 @@ class KilicDB {
         catch (err) {
             if (options.force)
                 return { success: true, deletedCount: 0 };
-            throw err;
+            (0, errors_1.handleError)(err);
         }
     }
     // ─────────────────────────────────────────────────────────────
@@ -322,12 +323,17 @@ class KilicDB {
         if (options.cursor) {
             const cursor = query.cursor();
             const results = [];
-            for await (const doc of cursor) {
-                results.push(doc);
+            try {
+                for await (const doc of cursor) {
+                    results.push(doc);
+                }
+            }
+            catch (err) {
+                (0, errors_1.handleError)(err);
             }
             return results;
         }
-        const docs = await query.exec();
+        const docs = await query.exec().catch(errors_1.handleError);
         return docs ?? [];
     }
     // ─────────────────────────────────────────────────────────────
@@ -349,7 +355,7 @@ class KilicDB {
             agg = agg.option(options.options);
         if (options.session)
             agg = agg.session(options.session);
-        return agg.exec();
+        return agg.exec().catch(errors_1.handleError);
     }
     // ─────────────────────────────────────────────────────────────
     // Convenience / Extra Operations
@@ -363,7 +369,7 @@ class KilicDB {
     async countDocuments(modelName, filter = {}, options = {}) {
         const model = this._resolveModel(modelName);
         const queryOptions = options.session ? { session: options.session } : {};
-        return model.countDocuments(filter, queryOptions);
+        return model.countDocuments(filter, queryOptions).catch(errors_1.handleError);
     }
     /**
      * Get an ultra-fast estimated total count of the collection.
@@ -374,7 +380,7 @@ class KilicDB {
      */
     async estimatedDocumentCount(modelName) {
         const model = this._resolveModel(modelName);
-        return model.estimatedDocumentCount();
+        return model.estimatedDocumentCount().catch(errors_1.handleError);
     }
     /**
      * Find distinct values for a given field.
@@ -384,7 +390,7 @@ class KilicDB {
      */
     async distinct(modelName, field, filter = {}) {
         const model = this._resolveModel(modelName);
-        return model.distinct(field, filter).exec();
+        return model.distinct(field, filter).exec().catch(errors_1.handleError);
     }
     /**
      * Bulk insert an array of documents. Faster than calling create() in a loop.
@@ -394,7 +400,7 @@ class KilicDB {
      */
     async insertMany(modelName, docs = [], options = {}) {
         const model = this._resolveModel(modelName);
-        const result = await model.insertMany(docs, options);
+        const result = await model.insertMany(docs, options).catch(errors_1.handleError);
         return result;
     }
     /**
@@ -409,7 +415,7 @@ class KilicDB {
         if (options.lean !== false)
             query = query.lean();
         query = this._applyPopulate(query, options.populate);
-        const doc = await query.exec();
+        const doc = await query.exec().catch(errors_1.handleError);
         return doc ?? null;
     }
     /**
@@ -420,7 +426,7 @@ class KilicDB {
      */
     async findByIdAndDelete(modelName, id, options = {}) {
         const model = this._resolveModel(modelName);
-        const doc = await model.findByIdAndDelete(id, options).lean();
+        const doc = await model.findByIdAndDelete(id, options).lean().catch(errors_1.handleError);
         return doc ?? null;
     }
     /**
@@ -431,7 +437,7 @@ class KilicDB {
      */
     async findOneAndDelete(modelName, filter = {}, options = {}) {
         const model = this._resolveModel(modelName);
-        const doc = await model.findOneAndDelete(filter, options).lean();
+        const doc = await model.findOneAndDelete(filter, options).lean().catch(errors_1.handleError);
         return doc ?? null;
     }
     /**
@@ -442,7 +448,7 @@ class KilicDB {
      */
     async replaceOne(modelName, filter = {}, replacement = {}, options = {}) {
         const model = this._resolveModel(modelName);
-        const doc = await model.findOneAndReplace(filter, replacement, { new: true, ...options }).lean();
+        const doc = await model.findOneAndReplace(filter, replacement, { new: true, ...options }).lean().catch(errors_1.handleError);
         return doc ?? null;
     }
     /**
@@ -460,7 +466,7 @@ class KilicDB {
         const ops = Array.isArray(operations) ? operations.filter(Boolean) : [];
         if (ops.length === 0)
             return { ok: true, result: null };
-        const result = await model.bulkWrite(ops, options);
+        const result = await model.bulkWrite(ops, options).catch(errors_1.handleError);
         return { ok: true, result };
     }
 }

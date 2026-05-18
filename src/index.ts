@@ -15,6 +15,7 @@ import {
   DeleteResult,
   BulkWriteResult,
 } from "./types";
+import { KilicError, handleError } from "./errors";
 
 
 class KilicDB {
@@ -136,16 +137,17 @@ class KilicDB {
             this._log(`Loaded model '${modelName}' from ${filePath}`);
             return loaded as Model<T>;
           } catch (err: any) {
-            throw new Error(`[kilic.db] Failed to load model '${modelName}' from ${filePath}: ${err?.message}`);
+            throw new KilicError(`Failed to load model '${modelName}' from ${filePath}: ${err?.message}`, "MODEL_LOAD_ERROR", err);
           }
         }
       }
     }
 
-    throw new Error(
-      `[kilic.db] Model '${modelName}' not found.\n` +
+    throw new KilicError(
+      `Model '${modelName}' not found.\n` +
       `  → Ensure it is registered via mongoose.model() before use, OR\n` +
-      `  → Set 'path' in db.config() to your models directory.`
+      `  → Set 'path' in db.config() to your models directory.`,
+      "MODEL_NOT_FOUND"
     );
   }
 
@@ -185,10 +187,11 @@ class KilicDB {
 
     const filter = options.filter ?? (data.id ? { id: data.id } : null);
     if (!filter) {
-      throw new Error(
-        `[kilic.db] create('${modelName}') requires a unique filter.\n` +
+      throw new KilicError(
+        `create('${modelName}') requires a unique filter.\n` +
         `  → Either set data.id, or pass options.filter explicitly.\n` +
-        `  → Example: db.create("User", { email: "..." }, { filter: { email: "..." } })`
+        `  → Example: db.create("User", { email: "..." }, { filter: { email: "..." } })`,
+        "MISSING_FILTER"
       );
     }
 
@@ -220,7 +223,7 @@ class KilicDB {
         }
         return (existing as T) ?? null;
       }
-      throw err;
+      handleError(err);
     }
   }
 
@@ -247,7 +250,7 @@ class KilicDB {
     if (options.lean !== false) query = query.lean() as any;
     query = this._applyPopulate(query, options.populate);
 
-    const doc = await query.exec();
+    const doc = await query.exec().catch(handleError);
     return (doc as T) ?? null;
   }
 
@@ -268,10 +271,11 @@ class KilicDB {
     const model = this._resolveModel<T>(modelName);
 
     if (!options.filter && !options.force) {
-      throw new Error(
-        `[kilic.db] update('${modelName}') requires options.filter.\n` +
+      throw new KilicError(
+        `update('${modelName}') requires options.filter.\n` +
         `  → Pass { filter: { id: "..." } } as the third argument.\n` +
-        `  → Or use { force: true } to update without a filter (matches first document).`
+        `  → Or use { force: true } to update without a filter (matches first document).`,
+        "MISSING_FILTER"
       );
     }
 
@@ -294,7 +298,7 @@ class KilicDB {
       return (doc as T) ?? false;
     } catch (err: any) {
       if (err?.code === 11000) return false;
-      throw err;
+      handleError(err);
     }
   }
 
@@ -324,7 +328,7 @@ class KilicDB {
       }
     } catch (err) {
       if (options.force) return { success: true, deletedCount: 0 };
-      throw err;
+      handleError(err);
     }
   }
 
@@ -357,13 +361,17 @@ class KilicDB {
     if (options.cursor) {
       const cursor = query.cursor();
       const results: T[] = [];
-      for await (const doc of cursor) {
-        results.push(doc as T);
+      try {
+        for await (const doc of cursor) {
+          results.push(doc as T);
+        }
+      } catch (err) {
+        handleError(err);
       }
       return results;
     }
 
-    const docs = await query.exec();
+    const docs = await query.exec().catch(handleError);
     return (docs as T[]) ?? [];
   }
 
@@ -389,7 +397,7 @@ class KilicDB {
     let agg = model.aggregate<T>(pipeline);
     if (options.options) agg = agg.option(options.options);
     if (options.session) agg = agg.session(options.session);
-    return agg.exec();
+    return agg.exec().catch(handleError);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -409,7 +417,7 @@ class KilicDB {
   ): Promise<number> {
     const model = this._resolveModel(modelName);
     const queryOptions = options.session ? { session: options.session } : {};
-    return model.countDocuments(filter, queryOptions);
+    return model.countDocuments(filter, queryOptions).catch(handleError);
   }
 
   /**
@@ -421,7 +429,7 @@ class KilicDB {
    */
   public async estimatedDocumentCount(modelName: string): Promise<number> {
     const model = this._resolveModel(modelName);
-    return model.estimatedDocumentCount();
+    return model.estimatedDocumentCount().catch(handleError);
   }
 
   /**
@@ -436,7 +444,7 @@ class KilicDB {
     filter: Record<string, any> = {}
   ): Promise<T[]> {
     const model = this._resolveModel(modelName);
-    return model.distinct(field, filter).exec() as Promise<T[]>;
+    return model.distinct(field, filter).exec().catch(handleError) as Promise<T[]>;
   }
 
   /**
@@ -451,7 +459,7 @@ class KilicDB {
     options: InsertManyExtraOptions = {}
   ): Promise<T[]> {
     const model = this._resolveModel<T>(modelName);
-    const result = await model.insertMany(docs, options as any);
+    const result = await model.insertMany(docs, options as any).catch(handleError);
     return result as unknown as T[];
   }
 
@@ -470,7 +478,7 @@ class KilicDB {
     let query = model.findById(id, options.projection, options.session ? { session: options.session } : {});
     if (options.lean !== false) query = query.lean() as any;
     query = this._applyPopulate(query, options.populate);
-    const doc = await query.exec();
+    const doc = await query.exec().catch(handleError);
     return (doc as T) ?? null;
   }
 
@@ -486,7 +494,7 @@ class KilicDB {
     options: { session?: any } = {}
   ): Promise<T | null> {
     const model = this._resolveModel<T>(modelName);
-    const doc = await model.findByIdAndDelete(id, options).lean();
+    const doc = await model.findByIdAndDelete(id, options).lean().catch(handleError);
     return (doc as T) ?? null;
   }
 
@@ -502,7 +510,7 @@ class KilicDB {
     options: { session?: any } = {}
   ): Promise<T | null> {
     const model = this._resolveModel<T>(modelName);
-    const doc = await model.findOneAndDelete(filter, options).lean();
+    const doc = await model.findOneAndDelete(filter, options).lean().catch(handleError);
     return (doc as T) ?? null;
   }
 
@@ -519,7 +527,7 @@ class KilicDB {
     options: { upsert?: boolean; session?: any } = {}
   ): Promise<T | null> {
     const model = this._resolveModel<T>(modelName);
-    const doc = await model.findOneAndReplace(filter, replacement, { new: true, ...options }).lean();
+    const doc = await model.findOneAndReplace(filter, replacement, { new: true, ...options }).lean().catch(handleError);
     return (doc as T) ?? null;
   }
 
@@ -541,7 +549,7 @@ class KilicDB {
     const model = this._resolveModel(modelName);
     const ops = Array.isArray(operations) ? operations.filter(Boolean) : [];
     if (ops.length === 0) return { ok: true, result: null };
-    const result = await model.bulkWrite(ops, options as any);
+    const result = await model.bulkWrite(ops, options as any).catch(handleError);
     return { ok: true, result };
   }
 }

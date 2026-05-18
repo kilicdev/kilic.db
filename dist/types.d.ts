@@ -1,4 +1,5 @@
 import { ConnectOptions, ClientSession } from "mongoose";
+export { KilicError } from "./errors";
 export interface KilicDBConfig {
     /**
      * MongoDB connection URL.

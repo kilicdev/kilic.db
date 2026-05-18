@@ -1,0 +1,46 @@
+{
+  "name": "kilic.db",
+  "version": "0.0.1",
+  "description": "Zero-boilerplate MongoDB wrapper. Configure once, use everywhere. Singleton-based, race condition proof, and fully typed.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kilicdev/kilic.db.git"
+  },
+  "keywords": [
+    "mongodb",
+    "mongoose",
+    "database",
+    "wrapper",
+    "singleton",
+    "db",
+    "kilic",
+    "orm",
+    "nosql",
+    "zero-boilerplate"
+  ],
+  "author": "kilicdev",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/kilicdev/kilic.db/issues"
+  },
+  "homepage": "https://github.com/kilicdev/kilic.db#readme",
+  "peerDependencies": {
+    "mongoose": ">=7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "mongoose": "^9.6.2",
+    "typescript": "^6.0.3"
+  }
+}

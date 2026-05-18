@@ -1,6 +1,6 @@
 {
   "name": "kilic.db",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Zero-boilerplate MongoDB wrapper. Configure once, use everywhere. Singleton-based, race condition proof, and fully typed.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

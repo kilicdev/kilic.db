@@ -59,7 +59,7 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+          package-manager-cache: false
 
       - name: Install Dependencies
         run: npm ci

@@ -1,6 +1,22 @@
-node_modules/
-dist/
+# Source files
 src/
-examplefile.js
 tsconfig.json
-*.map
+
+# Development and GitHub
+.github/
+.gitignore
+.gitattributes
+
+# Dependencies
+node_modules/
+
+# Testing
+tests/
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
+
+# OS and Misc
+.DS_Store
+*.log

@@ -252,21 +252,25 @@ class KilicDB {
   public async update<T = any>(
     modelName: string,
     data: Data[],
+    filter?: FilterResolver | Filter[],
     options?: UpdateOptions
   ): Promise<Array<T | null>>;
   public async update<T = any>(
     modelName: string,
     data: Data,
+    filter: Filter,
     options: UpdateOptions & { multi: true }
   ): Promise<UpdateResult>;
   public async update<T = any>(
     modelName: string,
     data: Data,
+    filter?: Filter,
     options?: UpdateOptions
   ): Promise<T | null>;
   public async update<T = any>(
     modelName: string,
     data: Data | Data[],
+    filter?: Filter | FilterResolver | Filter[],
     options: UpdateOptions = {}
   ): Promise<T | null | Array<T | null> | UpdateResult> {
     const model = this.#resolveModel<T>(modelName);
@@ -277,15 +281,15 @@ class KilicDB {
       }
       this.#assertNonEmptyArray(data, "update() data");
       return Promise.all(
-        data.map((item, index) => this.#updateOne(modelName, model, item, options, index))
+        data.map((item, index) => this.#updateOne(modelName, model, item, filter as FilterResolver | undefined, options, index))
       );
     }
 
     if (options.multi) {
-      return this.#updateMany(model, data, options);
+      return this.#updateMany(model, data, filter as Filter | undefined, options);
     }
 
-    return this.#updateOne(modelName, model, data, options);
+    return this.#updateOne(modelName, model, data, filter as Filter | undefined, options);
   }
 
   /**
@@ -433,13 +437,14 @@ class KilicDB {
     modelName: string,
     model: Model<T>,
     data: Data,
+    filter: Filter | FilterResolver | undefined,
     options: UpdateOptions,
     index?: number
   ): Promise<T | null> {
     this.#assertPlainObject(data, "update() data");
     this.#assertNonEmptyObject(data, "update() data");
 
-    const filter = this.#filterFromData(modelName, data, options.filter, index, "update()");
+    const resolvedFilter = this.#filterFromData(modelName, data, filter, index, "update()");
     const updatePayload = this.#hasUpdateOperator(data) ? data : { $set: data };
     const queryOptions = this.#writeOptions(options.session, {
       new: true,
@@ -447,7 +452,7 @@ class KilicDB {
     });
 
     try {
-      let query = model.findOneAndUpdate(filter, updatePayload, queryOptions);
+      let query = model.findOneAndUpdate(resolvedFilter, updatePayload, queryOptions);
       if (options.lean !== false) query = query.lean() as any;
       const doc = await query.exec();
       return (doc as T) ?? null;
@@ -459,17 +464,18 @@ class KilicDB {
   async #updateMany<T>(
     model: Model<T>,
     data: Data,
+    filter: Filter | undefined,
     options: UpdateOptions
   ): Promise<UpdateResult> {
     this.#assertPlainObject(data, "update() data");
     this.#assertNonEmptyObject(data, "update() data");
-    this.#assertSingleFilter(options.filter, "update()");
+    this.#assertSingleFilter(filter, "update()");
 
     const updatePayload = this.#hasUpdateOperator(data) ? data : { $set: data };
     const queryOptions = this.#writeOptions(options.session, { runValidators: true });
 
     try {
-      const result = await model.updateMany(options.filter, updatePayload, queryOptions);
+      const result = await model.updateMany(filter, updatePayload, queryOptions);
       return {
         success: true,
         matchedCount: result.matchedCount ?? 0,

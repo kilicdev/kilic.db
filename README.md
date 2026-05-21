@@ -27,9 +27,7 @@ await db.create("User", { id: "u_1", email: "ada@example.com" });
 
 const user = await db.get("User", { id: "u_1" });
 
-await db.update("User", { $inc: { loginCount: 1 } }, {
-  filter: { id: "u_1" },
-});
+await db.update("User", { $inc: { loginCount: 1 } }, { id: "u_1" });
 
 const revenue = await db.aggregate("Order", [
   { $match: { status: "paid" } },
@@ -98,7 +96,7 @@ Config options:
 | `ready()` | wait for connection | startup checks |
 | `create(model, data, options?)` | create once | single data, array data, custom filters |
 | `get(model, filter, options?)` | read one | projection, populate, session, lean control |
-| `update(model, data, options?)` | update data | single update, array updates, `multi` |
+| `update(model, data, filter?, options?)` | update data | single update, array updates, `multi` |
 | `delete(model, filter, options?)` | delete data | single filter, array filters, `multi` |
 | `find(model, filter?, options?)` | read many | projection, sort, skip, limit, populate, cursor |
 | `count(model, filter?, options?)` | count many | filtered counts |
@@ -210,24 +208,19 @@ const userDoc = await db.get("User", { id: "u_1" }, {
 Plain objects become `$set` updates:
 
 ```js
-await db.update("User", { name: "Grace" }, {
-  filter: { id: "u_1" },
-});
+await db.update("User", { name: "Grace" }, { id: "u_1" });
 ```
 
 MongoDB update operators pass through:
 
 ```js
-await db.update("User", { $inc: { loginCount: 1 } }, {
-  filter: { id: "u_1" },
-});
+await db.update("User", { $inc: { loginCount: 1 } }, { id: "u_1" });
 ```
 
 Update many matching documents with one payload:
 
 ```js
-await db.update("User", { archived: true }, {
-  filter: { active: false },
+await db.update("User", { archived: true }, { active: false }, {
   multi: true,
 });
 ```
@@ -244,25 +237,20 @@ await db.update("User", [
 Use a filter resolver when your identity field is not `id`:
 
 ```js
-await db.update("User", users, {
-  filter: (user) => ({ email: user.email }),
-});
+await db.update("User", users, (user) => ({ email: user.email }));
 ```
 
 Array updates also reject one shared filter object:
 
 ```js
 // Throws: every update would target the same user.
-await db.update("User", users, {
-  filter: { email: "ada@example.com" },
-});
+await db.update("User", users, { email: "ada@example.com" });
 ```
 
 When `multi: true` is used, `update()` returns counts instead of a document:
 
 ```js
-const result = await db.update("User", { archived: true }, {
-  filter: { active: false },
+const result = await db.update("User", { archived: true }, { active: false }, {
   multi: true,
 });
 
@@ -583,9 +571,9 @@ await db.create("Customer", customers, {
   filter: (customer) => ({ externalId: customer.externalId }),
 });
 
-await db.update("Customer", customers, {
-  filter: (customer) => ({ externalId: customer.externalId }),
-});
+await db.update("Customer", customers, (customer) => ({
+  externalId: customer.externalId,
+}));
 ```
 
 ### Huge Export
@@ -604,10 +592,12 @@ for await (const event of cursor) {
 ### Archive Old Data
 
 ```js
-await db.update("User", { archived: true }, {
-  filter: { lastLoginAt: { $lt: new Date("2025-01-01") } },
-  multi: true,
-});
+await db.update(
+  "User",
+  { archived: true },
+  { lastLoginAt: { $lt: new Date("2025-01-01") } },
+  { multi: true }
+);
 ```
 
 ### Dashboard Stats

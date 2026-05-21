@@ -104,13 +104,6 @@ export interface FindOptions extends ReadOptions {
 
 export interface UpdateOptions {
   /**
-   * Filter used to find the document to update.
-   * If omitted, kilic.db uses `data.id`.
-   * For array updates, pass an array of filters or a filter resolver function.
-   */
-  filter?: FilterResolver;
-
-  /**
    * Update every document matching `filter` with the same payload.
    */
   multi?: boolean;

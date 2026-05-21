@@ -1,141 +1,88 @@
-import { ConnectOptions, ClientSession } from "mongoose";
+import { AggregateOptions as MongooseAggregateOptions, ClientSession, ConnectOptions } from "mongoose";
 
 export { KilicError } from "./errors";
 
-// ─────────────────────────────────────────────────────────────
-// Configuration
-// ─────────────────────────────────────────────────────────────
+export type Filter = Record<string, any>;
+export type Data = Record<string, any>;
+export type Projection = Record<string, 0 | 1 | boolean>;
+export type Populate = string | string[] | Record<string, any>;
+export type FilterResolver = Filter | Filter[] | ((data: Data, index: number) => Filter);
 
 export interface KilicDBConfig {
   /**
    * MongoDB connection URL.
-   * @example "mongodb://localhost:27017/myapp"
-   * @example "mongodb+srv://user:pass@cluster.mongodb.net/myapp"
    */
   url?: string;
 
   /**
-   * Additional Mongoose connection options (poolSize, ssl, etc.)
+   * Additional Mongoose connection options.
    */
   options?: ConnectOptions;
 
   /**
    * Absolute path to the directory containing your Mongoose model files.
-   * Each file should export a Mongoose Model as `module.exports` or `export default`.
-   * If omitted, the wrapper will only resolve models registered via `mongoose.model()`.
-   * @example path.join(__dirname, "models")
    */
   path?: string;
 
   /**
-   * Enable verbose debug logging to stdout.
+   * Directory where db.backup() writes dated zip files.
+   * Defaults to `<cwd>/backups`.
+   */
+  backupDir?: string;
+
+  /**
+   * Enable verbose debug logging.
    */
   debug?: boolean;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Shared Options
-// ─────────────────────────────────────────────────────────────
-
 export interface CreateOptions {
   /**
-   * Custom filter to find an existing document.
-   * Required when your data has no `id` field.
+   * Custom filter used to identify the document.
+   * If omitted, kilic.db uses `data.id`.
+   * For array creates, pass an array of filters or a filter resolver function.
    */
-  filter?: Record<string, any>;
+  filter?: FilterResolver;
 
   /**
-   * If `true`, overwrites existing fields with `$set` instead of only writing on insert (`$setOnInsert`).
-   * Also handles 11000 duplicate key race conditions gracefully.
-   */
-  force?: boolean;
-
-  /**
-   * Mongoose ClientSession for use inside Transactions.
+   * Mongoose ClientSession for transactions.
    */
   session?: ClientSession;
 }
 
-export interface GetOptions {
+export interface ReadOptions {
   /**
-   * Field projection — which fields to include or exclude.
+   * Field projection.
    */
-  projection?: Record<string, 0 | 1>;
+  projection?: Projection;
 
   /**
-   * Return lean plain JS object instead of full Mongoose Document. Defaults to `true`.
+   * Return plain JavaScript objects instead of Mongoose documents.
+   * Defaults to `true`.
    */
   lean?: boolean;
 
   /**
    * Populate fields after query.
    */
-  populate?: string | string[] | Record<string, any>;
+  populate?: Populate;
 
   /**
-   * Mongoose ClientSession for use inside Transactions.
+   * Mongoose ClientSession for transactions.
    */
   session?: ClientSession;
 }
 
-export interface UpdateOptions {
-  /**
-   * Filter to find the document to update.
-   * Required unless `force: true` is passed.
-   */
-  filter?: Record<string, any>;
+export type GetOptions = ReadOptions;
 
+export interface FindOptions extends ReadOptions {
   /**
-   * If `true`, allows updating without a filter (dangerous — updates first match).
-   */
-  force?: boolean;
-
-  /**
-   * Run update on all matching documents instead of just the first.
-   */
-  multi?: boolean;
-
-  /**
-   * If `true`, creates the document if it doesn't exist.
-   */
-  upsert?: boolean;
-
-  /**
-   * Mongoose ClientSession for use inside Transactions.
-   */
-  session?: ClientSession;
-}
-
-export interface DeleteOptions {
-  /**
-   * If `true`, deletes all matching documents (deleteMany) and never throws if nothing is found.
-   */
-  force?: boolean;
-
-  /**
-   * Delete all matching documents.
-   */
-  multi?: boolean;
-
-  /**
-   * Mongoose ClientSession for use inside Transactions.
-   */
-  session?: ClientSession;
-}
-
-export interface FindOptions {
-  /**
-   * Field projection — which fields to include or exclude.
-   */
-  projection?: Record<string, 0 | 1>;
-
-  /**
-   * Sort documents. `{ createdAt: -1 }` or `"-createdAt"`.
+   * Sort documents. Example: `{ createdAt: -1 }` or `"-createdAt"`.
    */
   sort?: string | Record<string, 1 | -1>;
 
   /**
-   * Number of documents to skip (for pagination).
+   * Number of documents to skip.
    */
   skip?: number;
 
@@ -145,79 +92,108 @@ export interface FindOptions {
   limit?: number;
 
   /**
-   * Return lean plain JS objects instead of full Mongoose Documents. Defaults to `true`.
-   */
-  lean?: boolean;
-
-  /**
-   * Instead of returning an array, stream via a memory-safe cursor. Useful for millions of records.
+   * Return a Mongoose cursor instead of loading all results into memory.
    */
   cursor?: boolean;
 
   /**
-   * Populate fields after query.
+   * Cursor options passed to Mongoose.
    */
-  populate?: string | string[] | Record<string, any>;
+  cursorOptions?: Record<string, any>;
+}
+
+export interface UpdateOptions {
+  /**
+   * Filter used to find the document to update.
+   * If omitted, kilic.db uses `data.id`.
+   * For array updates, pass an array of filters or a filter resolver function.
+   */
+  filter?: FilterResolver;
 
   /**
-   * Mongoose ClientSession for use inside Transactions.
+   * Update every document matching `filter` with the same payload.
+   */
+  multi?: boolean;
+
+  /**
+   * Return plain JavaScript objects instead of Mongoose documents.
+   * Defaults to `true`.
+   */
+  lean?: boolean;
+
+  /**
+   * Mongoose ClientSession for transactions.
    */
   session?: ClientSession;
 }
 
-export interface AggregateExtraOptions {
+export interface DeleteOptions {
   /**
-   * Extra options passed directly to Mongoose aggregate (allowDiskUse, etc.)
+   * Delete every document matching `filter`.
    */
-  options?: Record<string, any>;
+  multi?: boolean;
 
   /**
-   * Mongoose ClientSession for use inside Transactions.
-   */
-  session?: ClientSession;
-}
-
-export interface InsertManyExtraOptions {
-  /**
-   * If `true`, continues inserting remaining documents even if one fails.
-   */
-  ordered?: boolean;
-
-  /**
-   * Mongoose ClientSession for use inside Transactions.
-   */
-  session?: ClientSession;
-}
-
-export interface BulkWriteExtraOptions {
-  /**
-   * If `true` (default), stop processing on first error. Set to `false` for unordered writes.
-   */
-  ordered?: boolean;
-
-  /**
-   * Mongoose ClientSession for use inside Transactions.
+   * Mongoose ClientSession for transactions.
    */
   session?: ClientSession;
 }
 
 export interface CountOptions {
   /**
-   * Mongoose ClientSession for use inside Transactions.
+   * Mongoose ClientSession for transactions.
    */
   session?: ClientSession;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Return Types
-// ─────────────────────────────────────────────────────────────
+export interface AggregateOptions extends MongooseAggregateOptions {
+  /**
+   * Mongoose ClientSession for transactions.
+   */
+  session?: ClientSession;
+}
+
+export interface BackupOptions {
+  /**
+   * Override the configured backup directory for this run.
+   */
+  backupDir?: string;
+
+  /**
+   * Custom backup id used in the zip file name.
+   */
+  id?: string;
+
+  /**
+   * Cursor batch size per collection.
+   */
+  batchSize?: number;
+}
+
+export interface UpdateResult {
+  success: boolean;
+  matchedCount: number;
+  modifiedCount: number;
+}
 
 export interface DeleteResult {
   success: boolean;
-  deletedCount?: number;
+  deletedCount: number;
 }
 
-export interface BulkWriteResult {
-  ok: boolean;
-  result: any;
+export interface BackupCollectionResult {
+  collection: string;
+  count: number;
+  file: string;
+}
+
+export interface BackupResult {
+  success: boolean;
+  id: string;
+  file: string;
+  directory: string;
+  database: string;
+  collections: BackupCollectionResult[];
+  size: number;
+  createdAt: string;
 }

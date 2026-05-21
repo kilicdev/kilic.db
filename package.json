@@ -1,7 +1,7 @@
 {
   "name": "kilic.db",
-  "version": "0.0.6",
-  "description": "Zero-boilerplate MongoDB wrapper. Configure once, use everywhere. Singleton-based, race condition proof, and fully typed.",
+  "version": "2.8.6",
+  "description": "Tiny MongoDB helper for Node.js. Configure once, create/get/update/delete everywhere, and drop to raw Mongoose when needed.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -42,5 +42,8 @@
     "@types/node": "^25.8.0",
     "mongoose": "^9.6.2",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0"
   }
 }

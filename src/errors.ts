@@ -1,47 +1,108 @@
-/**
- * Custom error class for kilic.db
- */
+export interface KilicErrorOptions {
+  code?: string;
+  hint?: string;
+  details?: Record<string, any>;
+  originalError?: any;
+}
+
+function formatDetails(details?: Record<string, any>): string[] {
+  if (!details || Object.keys(details).length === 0) return [];
+
+  return [
+    "Details:",
+    ...Object.entries(details)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, value]) => `  - ${key}: ${String(value)}`),
+  ];
+}
+
+function formatMessage(message: string, code: string, hint?: string, details?: Record<string, any>): string {
+  return [
+    `[kilic.db:${code}]`,
+    message,
+    hint ? `Hint: ${hint}` : undefined,
+    ...formatDetails(details),
+  ].filter(Boolean).join("\n");
+}
+
 export class KilicError extends Error {
   public code: string;
+  public hint?: string;
+  public details?: Record<string, any>;
   public originalError?: any;
 
-  constructor(message: string, code: string = "UNKNOWN_ERROR", originalError?: any) {
-    super(`[kilic.db] ${message}`);
+  constructor(message: string, codeOrOptions: string | KilicErrorOptions = "UNKNOWN_ERROR", originalError?: any) {
+    const options = typeof codeOrOptions === "string"
+      ? { code: codeOrOptions, originalError }
+      : codeOrOptions;
+
+    const code = options.code ?? "UNKNOWN_ERROR";
+    super(formatMessage(message, code, options.hint, options.details));
+
     this.name = "KilicError";
     this.code = code;
-    this.originalError = originalError;
+    this.hint = options.hint;
+    this.details = options.details;
+    this.originalError = options.originalError;
 
-    // Set prototype explicitly for extending Error in TypeScript
     Object.setPrototypeOf(this, KilicError.prototype);
   }
 }
 
-/**
- * Wraps raw Mongoose errors and standard Errors into KilicError
- */
 export function handleError(err: any): never {
   if (err instanceof KilicError) {
     throw err;
   }
 
-  // Handle Mongoose Duplicate Key (11000)
   if (err?.code === 11000) {
-    throw new KilicError("Duplicate key error. A document with this unique field already exists.", "DUPLICATE_KEY", err);
+    const keyValue = err?.keyValue ? JSON.stringify(err.keyValue) : undefined;
+    throw new KilicError("A document with the same unique value already exists.", {
+      code: "DUPLICATE_KEY",
+      hint: "Use update() for existing documents, or pass a create() filter that matches your unique key.",
+      details: {
+        collection: err?.collection,
+        key: keyValue,
+      },
+      originalError: err,
+    });
   }
 
-  // Handle Mongoose Validation Error
   if (err?.name === "ValidationError") {
-    throw new KilicError(`Validation failed: ${err.message}`, "VALIDATION_ERROR", err);
+    const fields = err?.errors
+      ? Object.entries(err.errors)
+          .map(([field, fieldError]: [string, any]) => `${field}: ${fieldError?.message ?? "invalid value"}`)
+          .join("; ")
+      : undefined;
+
+    throw new KilicError("Mongoose rejected the document because validation failed.", {
+      code: "VALIDATION_ERROR",
+      hint: "Check required fields, enum values, custom validators, and schema types.",
+      details: {
+        fields,
+      },
+      originalError: err,
+    });
   }
 
-  // Handle Mongoose Cast Error (e.g. invalid ObjectId)
   if (err?.name === "CastError") {
-    throw new KilicError(`Invalid data type or ID: ${err.message}`, "CAST_ERROR", err);
+    throw new KilicError("Mongoose could not cast a value to the schema type it expected.", {
+      code: "CAST_ERROR",
+      hint: "Check IDs, filter values, and update payload types before calling kilic.db.",
+      details: {
+        path: err?.path,
+        expected: err?.kind,
+        value: err?.value,
+      },
+      originalError: err,
+    });
   }
 
-  // Fallback for other errors
   const message = err?.message || "An unknown database error occurred.";
   const code = err?.code || "DATABASE_ERROR";
-  
-  throw new KilicError(message, String(code), err);
+
+  throw new KilicError(message, {
+    code: String(code),
+    hint: "Inspect originalError for the underlying Mongoose or MongoDB failure.",
+    originalError: err,
+  });
 }

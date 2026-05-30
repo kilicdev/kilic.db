@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  MONGOMS_DOWNLOAD_DIR: ${{ runner.temp }}/mongodb-binaries
+  MONGOMS_DOWNLOAD_DIR: /tmp/mongodb-binaries
 
 jobs:
   test:

@@ -54,6 +54,16 @@ export function handleError(err: any): never {
     throw err;
   }
 
+  if (
+    typeof err?.hasErrorLabel === "function" &&
+    (
+      err.hasErrorLabel("TransientTransactionError") ||
+      err.hasErrorLabel("UnknownTransactionCommitResult")
+    )
+  ) {
+    throw err;
+  }
+
   if (err?.code === 11000) {
     const keyValue = err?.keyValue ? JSON.stringify(err.keyValue) : undefined;
     throw new KilicError("A document with the same unique value already exists.", {

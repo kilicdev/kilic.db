@@ -11,6 +11,7 @@ export type FilterResolver = Filter | Filter[] | ((data: Data, index: number) =>
 export interface KilicDBConfig {
   /**
    * MongoDB connection URL.
+   * When omitted, kilic.db starts a mongodb-memory-server-core replica set and persists data to `file`.
    */
   url?: string;
 
@@ -23,6 +24,23 @@ export interface KilicDBConfig {
    * Absolute path to the directory containing your Mongoose model files.
    */
   path?: string;
+
+  /**
+   * JSON file used by the built-in mongodb-memory-server mode.
+   * Defaults to `<cwd>/kilic.db.json` when `url` is omitted.
+   */
+  file?: string;
+
+  /**
+   * Database name used by the built-in mongodb-memory-server mode.
+   * Defaults to the existing file store database name, then `kilicdb`.
+   */
+  database?: string;
+
+  /**
+   * Options passed to MongoMemoryReplSet.create() when `url` is omitted.
+   */
+  memoryServerOptions?: Record<string, any>;
 
   /**
    * Directory where db.backup() writes dated zip files.

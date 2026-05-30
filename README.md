@@ -52,9 +52,12 @@ const revenue = await db.aggregate("Order", [
 npm install kilic.db mongoose
 ```
 
+Node.js `20.19.0` or newer is required.
+
 `mongoose` is a peer dependency, so your app owns the actual Mongoose version.
 
 `archiver` is installed with `kilic.db` and is used internally by `db.backup()`.
+`mongodb-memory-server-core` is also installed with `kilic.db`; it is loaded only when you omit `url`.
 
 ## Configure
 
@@ -72,6 +75,20 @@ db.config({
 
 `config()` starts the connection in the background. Mongoose buffers commands while the connection is opening.
 
+No MongoDB server? Omit `url`. kilic.db starts a local one-node `mongodb-memory-server-core` replica set, loads the JSON file into MongoDB, and writes changes back to the same file after kilic.db write commands:
+
+```js
+db.config({
+  file: path.join(__dirname, "data", "kilic.db.json"),
+  database: "myapp",
+  path: path.join(__dirname, "models"),
+});
+```
+
+If `file` is omitted, kilic.db uses `<cwd>/kilic.db.json`. The file uses MongoDB EJSON, so ObjectIds, dates, and other BSON values can round-trip safely.
+
+The memory mode uses `mongodb-memory-server-core`, so it does not download a MongoDB binary during package install. The first URL-free run may download the `mongod` binary into the user's MongoDB Memory Server cache unless `MONGOMS_SYSTEM_BINARY` or other MongoDB Memory Server config points to an existing binary.
+
 Need an explicit boot barrier?
 
 ```js
@@ -85,6 +102,9 @@ Config options:
 | `url` | `string` | MongoDB connection string |
 | `options` | `ConnectOptions` | Options passed to `mongoose.connect()` |
 | `path` | `string` | Directory for auto-loading model files |
+| `file` | `string` | JSON file for built-in memory-server persistence when `url` is omitted |
+| `database` | `string` | Database name for built-in memory-server mode |
+| `memoryServerOptions` | `object` | Options passed to `MongoMemoryReplSet.create()` |
 | `backupDir` | `string` | Default output directory for `db.backup()` |
 | `debug` | `boolean` | Print small kilic.db lifecycle logs |
 
@@ -92,8 +112,10 @@ Config options:
 
 | Command | Reads like | Supports |
 |---|---|---|
-| `config(options)` | connect and configure | `url`, `path`, Mongoose connect options |
+| `config(options)` | connect and configure | `url`, `file`, `path`, Mongoose connect options |
 | `ready()` | wait for connection | startup checks |
+| `flush()` | write file-backed data now | memory-server mode |
+| `disconnect()` | flush and close | scripts, tests, shutdown |
 | `create(model, data, options?)` | create once | single data, array data, custom filters |
 | `get(model, filter, options?)` | read one | projection, populate, session, lean control |
 | `update(model, data, filter?, options?)` | update data | single update, array updates, `multi` |
@@ -439,6 +461,36 @@ db.connection.on("disconnected", () => {
   console.warn("MongoDB disconnected");
 });
 ```
+
+In file-backed memory-server mode, kilic.db flushes after its own write commands. If you write through raw Mongoose models directly, call `await db.flush()` before shutdown so those changes are written to the JSON file.
+
+## Examples
+
+The `examples/` directory contains runnable examples for both modes:
+
+```bash
+npm run build
+node examples/file-backed-memory.js
+node examples/transactions.js
+```
+
+Use `examples/mongodb-url.js` with a real MongoDB URL:
+
+```bash
+MONGODB_URI="mongodb://127.0.0.1:27017/kilic_example" node examples/mongodb-url.js
+```
+
+## Development
+
+Run the full local check:
+
+```bash
+npm test
+```
+
+`npm test` builds the package and runs the Node.js test suite in `tests/`. CI runs type checks, tests, and package dry-run checks on supported Node.js versions.
+
+Releases are automated from `main`: when tests pass and the `package.json` version is not already published on npm, GitHub Actions publishes the package and creates the matching GitHub release tag. Configure npm Trusted Publishing for this repository, or set an `NPM_TOKEN` repository secret.
 
 ---
 

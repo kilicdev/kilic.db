@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  MONGOMS_DOWNLOAD_DIR: ${{ runner.temp }}/mongodb-binaries
+
 jobs:
-  build:
-    name: Build & Type Check
+  test:
+    name: Test on Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -25,17 +28,26 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
+      - name: Cache MongoDB binary
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MONGOMS_DOWNLOAD_DIR }}
+          key: ${{ runner.os }}-${{ runner.arch }}-mongodb-memory-server-8.2.6
+
       - name: Install Dependencies
         run: npm ci
 
-      - name: TypeScript Type Check
-        run: npx tsc --noEmit
+      - name: Type Check
+        run: npm run typecheck
 
-      - name: Build
-        run: npm run build
+      - name: Test
+        run: npm test
 
       - name: Verify dist output
         run: |
-          test -f dist/index.js   || (echo "❌ dist/index.js missing" && exit 1)
-          test -f dist/index.d.ts || (echo "❌ dist/index.d.ts missing" && exit 1)
-          echo "✅ Build output verified"
+          test -f dist/index.js   || (echo "dist/index.js missing" && exit 1)
+          test -f dist/index.d.ts || (echo "dist/index.d.ts missing" && exit 1)
+          echo "Build output verified"
+
+      - name: Verify package contents
+        run: npm pack --dry-run

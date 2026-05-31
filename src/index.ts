@@ -97,8 +97,9 @@ class KilicDB {
   public config(options: KilicDBConfig): void {
     const previousPath = this.#config.path;
     const state = mongoose.connection.readyState;
-    const nextConfig = { ...this.#config, ...options };
-    const active = (state === 1 || state === 2) && Boolean(this.#connectionPromise);
+    const active = state === 1 || state === 2 || Boolean(this.#connectionPromise);
+    const baseConfig = active ? this.#config : {};
+    const nextConfig = { ...baseConfig, ...options };
 
     if (
       active &&
@@ -185,6 +186,9 @@ class KilicDB {
       }
     } finally {
       await mongoose.disconnect().catch(() => undefined);
+      while (mongoose.connection.readyState !== 0) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
       this.#removeDisconnectedListener?.();
       this.#removeShutdownHook();
       await this.#stopMemoryServer().catch(() => undefined);
@@ -705,7 +709,6 @@ class KilicDB {
   #fileStoreFilePath(): string {
     const raw = this.#config.file ?? this.#getDefaultFileStorePath();
     const resolved = this.#ensureKdExtension(nodePath.resolve(raw));
-    this.#log(`DEBUG: file store path resolved to: ${resolved}`);
     return resolved;
   }
 

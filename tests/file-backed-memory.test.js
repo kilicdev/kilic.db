@@ -204,10 +204,7 @@ test("creates default datas.kd when no file is configured", async () => {
   });
 
   try {
-    while (db.connection.readyState !== 0) {
-      await new Promise(r => setTimeout(r, 10));
-    }
-    db.config({ database: uniqueName("defaultdb"), cwd: directory, debug: true });
+    db.config({ database: uniqueName("defaultdb"), cwd: directory });
     await db.create(modelName, { id: "d_1" });
     await db.flush();
     await db.disconnect();

@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
@@ -144,4 +146,79 @@ test("array writes are transaction-safe in file-backed mode", async () => {
   const rows = getCollection(await readStore(file), collectionName);
   assert.deepEqual(rows.map((item) => item.id), ["a"]);
   assert.equal(ejsonNumber(rows[0].count), 3);
+});
+
+test("enforces .kd extension when user provides .json file path", async () => {
+  const { directory } = await tempFile();
+  const modelName = uniqueName("ExtUser");
+  const collectionName = "ext_users";
+
+  defineModel(modelName, collectionName, {
+    id: { type: String, unique: true },
+    name: String,
+  });
+
+  // User passes .json — kilic.db should write to .kd instead
+  db.config({ file: path.join(directory, "mydata.json"), database: uniqueName("extdb") });
+
+  await db.create(modelName, { id: "e_1", name: "Ada" });
+  await db.disconnect();
+
+  // .kd file should exist, .json should NOT
+  const kdFile = path.join(directory, "mydata.kd");
+  const jsonFile = path.join(directory, "mydata.json");
+
+  await fs.access(kdFile); // should not throw
+  await assert.rejects(fs.access(jsonFile), { code: "ENOENT" });
+
+  const store = await readStore(kdFile);
+  const users = getCollection(store, collectionName);
+  assert.equal(users[0].id, "e_1");
+});
+
+test("enforces .kd extension when user provides no extension", async () => {
+  const { directory } = await tempFile();
+  const modelName = uniqueName("NoExtUser");
+  const collectionName = "noext_users";
+
+  defineModel(modelName, collectionName, {
+    id: { type: String, unique: true },
+  });
+
+  db.config({ file: path.join(directory, "mydata"), database: uniqueName("noextdb") });
+
+  await db.create(modelName, { id: "n_1" });
+  await db.disconnect();
+
+  const kdFile = path.join(directory, "mydata.kd");
+  await fs.access(kdFile); // should exist
+});
+
+test("creates default datas.kd when no file is configured", async () => {
+  const { directory } = await tempFile();
+  const modelName = uniqueName("DefaultUser");
+  const collectionName = "default_users";
+
+  defineModel(modelName, collectionName, {
+    id: { type: String, unique: true },
+  });
+
+  try {
+    while (db.connection.readyState !== 0) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+    db.config({ database: uniqueName("defaultdb"), cwd: directory, debug: true });
+    await db.create(modelName, { id: "d_1" });
+    await db.flush();
+    await db.disconnect();
+
+    const defaultFile = path.join(directory, "datas.kd");
+    await fs.access(defaultFile); // should exist
+
+    const store = await readStore(defaultFile);
+    const users = getCollection(store, collectionName);
+    assert.equal(users[0].id, "d_1");
+  } finally {
+    // No longer needed since cwd is passed to db.config directly
+  }
 });

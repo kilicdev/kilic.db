@@ -22,9 +22,16 @@ import {
 } from "./types";
 import { KilicError, handleError } from "./errors";
 
-const archiver = require("archiver");
-const DEFAULT_FILE_STORE = "kilic.db.json";
-const DEFAULT_MEMORY_DATABASE = "kilicdb";
+const KD_EXTENSION = ".kd";
+
+// No longer top-level functions
+// function getDefaultFileStorePath(cwd: string = process.cwd()): string {
+//   return nodePath.join(cwd, "datas.kd");
+// }
+
+// function getDefaultDatabaseName(): string {
+//   return "kilicdb";
+// }
 
 type MongoMemoryServerLike = {
   getUri(dbName?: string): string;
@@ -66,6 +73,7 @@ class KilicDB {
   #fileStoreWritePromise: Promise<void> = Promise.resolve();
   #removeDisconnectedListener?: () => void;
   #patchedSessions: WeakSet<object> = new WeakSet();
+  #shutdownBound?: () => void;
 
   /**
    * Raw Mongoose instance for sessions, plugins, transactions, and advanced APIs.
@@ -90,7 +98,7 @@ class KilicDB {
     const previousPath = this.#config.path;
     const state = mongoose.connection.readyState;
     const nextConfig = { ...this.#config, ...options };
-    const active = state === 1 || state === 2 || Boolean(this.#connectionPromise);
+    const active = (state === 1 || state === 2) && Boolean(this.#connectionPromise);
 
     if (
       active &&
@@ -176,9 +184,10 @@ class KilicDB {
         await this.#persistFileStore();
       }
     } finally {
-      await mongoose.disconnect();
+      await mongoose.disconnect().catch(() => undefined);
       this.#removeDisconnectedListener?.();
-      await this.#stopMemoryServer();
+      this.#removeShutdownHook();
+      await this.#stopMemoryServer().catch(() => undefined);
       this.#connectionPromise = undefined;
     }
   }
@@ -269,6 +278,7 @@ class KilicDB {
 
     if (Array.isArray(data)) {
       this.#assertNonEmptyArray(data, "create() data");
+      this.#assertFilterArrayLength(data, options.filter, "create()");
       const docs = this.#sessionInTransaction(options.session)
         ? await this.#mapSequential(data, (item, index) => this.#createOne(modelName, model, item, options, index))
         : await Promise.all(
@@ -340,6 +350,7 @@ class KilicDB {
         throw new KilicError("update() cannot combine array data with multi: true.", "INVALID_OPTION");
       }
       this.#assertNonEmptyArray(data, "update() data");
+      this.#assertFilterArrayLength(data, filter as FilterResolver | undefined, "update()");
       result = this.#sessionInTransaction(options.session)
         ? await this.#mapSequential(data, (item, index) => this.#updateOne(modelName, model, item, filter as FilterResolver | undefined, options, index))
         : await Promise.all(
@@ -505,6 +516,7 @@ class KilicDB {
       await this.#initRegisteredModels();
       await this.#persistFileStore();
 
+      this.#registerShutdownHook();
       this.#log(`Connected to file-backed MongoDB memory server at ${filePath}.`);
       return mongoose.connection;
     } catch (err) {
@@ -543,8 +555,13 @@ class KilicDB {
       return (doc as T) ?? null;
     } catch (err: any) {
       if (err?.code === 11000) {
-        const existing = await model.findOne(filter, null, this.#sessionOptions(options.session)).lean();
-        if (existing) return existing as T;
+        // Race: another writer inserted between our check. Retry the upsert once — it will now find the existing doc.
+        try {
+          const doc = await model.findOneAndUpdate(filter, { $setOnInsert: data }, queryOptions).lean();
+          return (doc as T) ?? null;
+        } catch (retryErr: any) {
+          handleError(retryErr);
+        }
       }
       handleError(err);
     }
@@ -566,6 +583,7 @@ class KilicDB {
     const queryOptions = this.#writeOptions(options.session, {
       returnDocument: "after",
       runValidators: true,
+      ...(options.upsert ? { upsert: true, setDefaultsOnInsert: true } : {}),
     });
 
     try {
@@ -589,7 +607,10 @@ class KilicDB {
     this.#assertSingleFilter(filter, "update()");
 
     const updatePayload = this.#hasUpdateOperator(data) ? data : { $set: data };
-    const queryOptions = this.#writeOptions(options.session, { runValidators: true });
+    const queryOptions = this.#writeOptions(options.session, {
+      runValidators: true,
+      ...(options.upsert ? { upsert: true } : {}),
+    });
 
     try {
       const result = await model.updateMany(filter, updatePayload, queryOptions);
@@ -629,10 +650,40 @@ class KilicDB {
     };
   }
 
+  #registerShutdownHook(): void {
+    this.#removeShutdownHook();
+
+    const handler = () => {
+      void this.disconnect()
+        .catch(() => undefined)
+        .finally(() => process.exit(0));
+    };
+
+    this.#shutdownBound = handler;
+    process.once("SIGINT", handler);
+    process.once("SIGTERM", handler);
+  }
+
+  #removeShutdownHook(): void {
+    if (this.#shutdownBound) {
+      process.removeListener("SIGINT", this.#shutdownBound);
+      process.removeListener("SIGTERM", this.#shutdownBound);
+      this.#shutdownBound = undefined;
+    }
+  }
+
   #connectionKey(config: KilicDBConfig): string {
     if (config.url) return `url:${config.url}`;
-    const filePath = nodePath.resolve(config.file ?? nodePath.join(process.cwd(), DEFAULT_FILE_STORE));
+    const filePath = this.#ensureKdExtension(nodePath.resolve(config.file ?? this.#getDefaultFileStorePathForConfig(config)));
     return `file:${filePath}:${config.database ?? ""}`;
+  }
+
+  #getDefaultFileStorePathForConfig(config: KilicDBConfig): string {
+    return nodePath.join(config.cwd ?? process.cwd(), "datas.kd");
+  }
+
+  #getDefaultDatabaseName(): string {
+    return "kilicdb";
   }
 
   #loadMongoMemoryServer(): { MongoMemoryReplSet: { create(options?: Record<string, any>): Promise<MongoMemoryServerLike> } } {
@@ -652,7 +703,21 @@ class KilicDB {
   }
 
   #fileStoreFilePath(): string {
-    return nodePath.resolve(this.#config.file ?? nodePath.join(process.cwd(), DEFAULT_FILE_STORE));
+    const raw = this.#config.file ?? this.#getDefaultFileStorePath();
+    const resolved = this.#ensureKdExtension(nodePath.resolve(raw));
+    this.#log(`DEBUG: file store path resolved to: ${resolved}`);
+    return resolved;
+  }
+
+  #getDefaultFileStorePath(): string {
+    return nodePath.join(this.#config.cwd ?? process.cwd(), "datas.kd");
+  }
+
+  #ensureKdExtension(filePath: string): string {
+    const ext = nodePath.extname(filePath);
+    if (ext === KD_EXTENSION) return filePath;
+    if (ext) return filePath.slice(0, -ext.length) + KD_EXTENSION;
+    return filePath + KD_EXTENSION;
   }
 
   async #readFileStoreSnapshot(filePath: string): Promise<FileStoreSnapshot | null> {
@@ -685,7 +750,7 @@ class KilicDB {
   }
 
   #fileStoreDatabaseName(snapshot: FileStoreSnapshot | null): string {
-    const database = String(this.#config.database ?? snapshot?.database ?? DEFAULT_MEMORY_DATABASE).trim();
+    const database = String(this.#config.database ?? snapshot?.database ?? this.#getDefaultDatabaseName()).trim();
     if (!database || /[\/\\."$\0]/.test(database)) {
       throw new KilicError("File-backed database name is invalid.", {
         code: "INVALID_DATABASE_NAME",
@@ -742,10 +807,20 @@ class KilicDB {
   async #persistFileStore(): Promise<void> {
     if (!this.#fileStorePath) return;
 
-    const previous = this.#fileStoreWritePromise.catch(() => undefined);
-    const next = previous.then(() => this.#writeFileStoreSnapshot());
+    const next = this.#fileStoreWritePromise
+      .catch(() => undefined)
+      .then(() => this.#writeFileStoreSnapshot());
     this.#fileStoreWritePromise = next;
-    await next;
+
+    try {
+      await next;
+    } catch (err) {
+      // Reset chain so next caller retries from clean state
+      if (this.#fileStoreWritePromise === next) {
+        this.#fileStoreWritePromise = Promise.resolve();
+      }
+      throw err;
+    }
   }
 
   async #persistAfterWrite(session?: any): Promise<void> {
@@ -801,28 +876,46 @@ class KilicDB {
     const filePath = this.#fileStorePath;
     if (!db || !filePath) return;
 
+    const directory = nodePath.dirname(filePath);
+    const tempFile = nodePath.join(directory, `.${nodePath.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+
     try {
-      const collections: Record<string, any[]> = {};
+      await fsp.mkdir(directory, { recursive: true });
       const collectionNames = await this.#collectionNames();
 
-      for (const collectionName of collectionNames) {
-        const documents = await db.collection(collectionName).find({}).toArray();
-        collections[collectionName] = documents.map((document) => this.#serializeEJSON(document));
+      const stream = fs.createWriteStream(tempFile, { encoding: "utf-8" });
+      const write = (content: string) => this.#streamWrite(stream, content);
+
+      await write(`{\n  "version": 1,\n  "database": ${JSON.stringify(db.databaseName)},\n  "updatedAt": ${JSON.stringify(new Date().toISOString())},\n  "collections": {\n`);
+
+      for (let ci = 0; ci < collectionNames.length; ci++) {
+        const collectionName = collectionNames[ci];
+        if (ci > 0) await write(",\n");
+        await write(`    ${JSON.stringify(collectionName)}: [`);
+
+        const cursor = db.collection(collectionName).find({});
+        let first = true;
+
+        for await (const document of cursor) {
+          const serialized = JSON.stringify(this.#serializeEJSON(document));
+          if (!first) await write(",");
+          await write(serialized);
+          first = false;
+        }
+
+        await write("]");
       }
 
-      const payload = {
-        version: 1,
-        database: db.databaseName,
-        updatedAt: new Date().toISOString(),
-        collections,
-      };
-      const directory = nodePath.dirname(filePath);
-      const tempFile = nodePath.join(directory, `.${nodePath.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+      await write("\n  }\n}\n");
 
-      await fsp.mkdir(directory, { recursive: true });
-      await fsp.writeFile(tempFile, JSON.stringify(payload, null, 2), "utf-8");
+      await new Promise<void>((resolve, reject) => {
+        stream.on("error", reject);
+        stream.end(() => resolve());
+      });
+
       await fsp.rename(tempFile, filePath);
     } catch (err) {
+      await fsp.rm(tempFile, { force: true }).catch(() => undefined);
       throw new KilicError("Could not write file-backed database store.", {
         code: "FILE_STORE_WRITE_FAILED",
         hint: "Check that the configured db.config({ file }) path is writable.",
@@ -903,6 +996,7 @@ class KilicDB {
     const cursor = db.collection(collectionName).find({}, {
       batchSize: this.#positiveNumber(batchSize, "backup batchSize"),
       noCursorTimeout: true,
+      maxTimeMS: 30 * 60 * 1000, // 30 min safety cap
     });
 
     let count = 0;
@@ -921,8 +1015,8 @@ class KilicDB {
 
       await this.#streamWrite(stream, "\n]\n");
       await new Promise<void>((resolve, reject) => {
+        stream.on("error", reject);
         stream.end(() => resolve());
-        stream.once("error", reject);
       });
 
       return {
@@ -950,9 +1044,26 @@ class KilicDB {
     );
   }
 
+  #loadArchiver(): { ZipArchive: new (options?: Record<string, any>) => any } {
+    try {
+      return require("archiver");
+    } catch (err: any) {
+      if (err?.code === "MODULE_NOT_FOUND" && err?.message?.includes("archiver")) {
+        throw new KilicError("Missing dependency 'archiver'.", {
+          code: "MISSING_DEPENDENCY",
+          hint: "Install it with: npm install archiver",
+          originalError: err,
+        });
+      }
+
+      throw err;
+    }
+  }
+
   #zipDirectory(sourceDir: string, zipFile: string): Promise<number> {
     return new Promise<number>((resolve, reject) => {
-      const archive = archiver("zip", { zlib: { level: 9 } });
+      const { ZipArchive } = this.#loadArchiver();
+      const archive = new ZipArchive({ zlib: { level: 9 } });
       const output = fs.createWriteStream(zipFile);
 
       output.on("close", () => resolve(Number(archive.pointer() || 0)));
@@ -1133,11 +1244,25 @@ class KilicDB {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new KilicError(`${label} must be a plain object.`, "INVALID_OBJECT");
     }
+
+    const dangerous = Object.keys(value).find((key) => key === "__proto__" || key === "constructor" || key === "prototype");
+    if (dangerous) {
+      throw new KilicError(`${label} contains a forbidden key '${dangerous}'.`, "PROTOTYPE_POLLUTION");
+    }
   }
 
   #assertNonEmptyArray(value: unknown[], label: string): void {
     if (value.length === 0) {
       throw new KilicError(`${label} cannot be empty.`, "EMPTY_ARRAY");
+    }
+  }
+
+  #assertFilterArrayLength(data: Data[], filter: FilterResolver | undefined, scope: string): void {
+    if (Array.isArray(filter) && filter.length !== data.length) {
+      throw new KilicError(
+        `${scope} filter array length (${filter.length}) does not match data array length (${data.length}).`,
+        "FILTER_LENGTH_MISMATCH"
+      );
     }
   }
 

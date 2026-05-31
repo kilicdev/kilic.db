@@ -75,17 +75,17 @@ db.config({
 
 `config()` starts the connection in the background. Mongoose buffers commands while the connection is opening.
 
-No MongoDB server? Omit `url`. kilic.db starts a local one-node `mongodb-memory-server-core` replica set, loads the JSON file into MongoDB, and writes changes back to the same file after kilic.db write commands:
+No MongoDB server? Omit `url`. kilic.db starts a local one-node `mongodb-memory-server-core` replica set, loads the `.kd` data file into MongoDB, and writes changes back to the same file after kilic.db write commands:
 
 ```js
 db.config({
-  file: path.join(__dirname, "data", "kilic.db.json"),
+  file: path.join(__dirname, "data", "myapp.kd"),
   database: "myapp",
   path: path.join(__dirname, "models"),
 });
 ```
 
-If `file` is omitted, kilic.db uses `<cwd>/kilic.db.json`. The file uses MongoDB EJSON, so ObjectIds, dates, and other BSON values can round-trip safely.
+If `file` is omitted, kilic.db creates `<cwd>/datas.kd`. The `.kd` extension is enforced automatically — any other extension is replaced. The file uses MongoDB EJSON internally, so ObjectIds, dates, and other BSON values can round-trip safely.
 
 The memory mode uses `mongodb-memory-server-core`, so it does not download a MongoDB binary during package install. The first URL-free run may download the `mongod` binary into the user's MongoDB Memory Server cache unless `MONGOMS_SYSTEM_BINARY` or other MongoDB Memory Server config points to an existing binary.
 

@@ -27,7 +27,8 @@ export interface KilicDBConfig {
 
   /**
    * JSON file used by the built-in mongodb-memory-server mode.
-   * Defaults to `<cwd>/kilic.db.json` when `url` is omitted.
+   * The `.kd` extension is enforced automatically — any other extension is replaced.
+   * Defaults to `<cwd>/datas.kd` when `url` is omitted.
    */
   file?: string;
 
@@ -36,6 +37,12 @@ export interface KilicDBConfig {
    * Defaults to the existing file store database name, then `kilicdb`.
    */
   database?: string;
+
+  /**
+   * Override Node.js process.cwd() for file-backed mode path resolution.
+   * Used only in tests, for dynamic temporary directory handling.
+   */
+  cwd?: string;
 
   /**
    * Options passed to MongoMemoryReplSet.create() when `url` is omitted.
@@ -125,6 +132,11 @@ export interface UpdateOptions {
    * Update every document matching `filter` with the same payload.
    */
   multi?: boolean;
+
+  /**
+   * Create the document if it does not exist.
+   */
+  upsert?: boolean;
 
   /**
    * Return plain JavaScript objects instead of Mongoose documents.

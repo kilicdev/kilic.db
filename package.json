@@ -1,9 +1,23 @@
 {
   "name": "kilic.db",
-  "version": "2.9.0",
+  "version": "3.0.0",
   "description": "Tiny MongoDB helper for Node.js. Configure once, create/get/update/delete everywhere, and drop to raw Mongoose when needed.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "default": "./dist/errors.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    }
+  },
   "files": [
     "dist/**/*",
     "examples/*.js",
@@ -50,7 +64,7 @@
     "mongoose": "^9.6.2",
     "typescript": "^6.0.3"
   },
-  "dependencies": {
+  "optionalDependencies": {
     "archiver": "^8.0.0",
     "mongodb-memory-server-core": "^11.2.0"
   }

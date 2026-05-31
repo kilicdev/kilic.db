@@ -10,7 +10,7 @@ async function cleanupDb() {
   db.mongoose.deleteModel(/.+/);
 }
 
-async function tempFile(fileName = "kilic.db.json") {
+async function tempFile(fileName = "datas.kd") {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kilic-db-test-"));
   return {
     directory,

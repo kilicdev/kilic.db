@@ -15,7 +15,7 @@ mongoose.models.ExampleAccount || mongoose.model(
 
 async function main() {
   db.config({
-    file: path.join(__dirname, "data", "transactions.db.json"),
+    file: path.join(__dirname, "data", "transactions.kd"),
     database: "kilic_transactions",
   });
 

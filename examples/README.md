@@ -15,6 +15,6 @@ const db = require("kilic.db");
 
 ## Files
 
-- `file-backed-memory.js` uses kilic.db without a MongoDB URL and persists data to a JSON file.
+- `file-backed-memory.js` uses kilic.db without a MongoDB URL and persists data to a `.kd` file.
 - `mongodb-url.js` uses a normal MongoDB connection string.
 - `transactions.js` shows the same session and transaction style in file-backed memory mode.

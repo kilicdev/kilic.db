@@ -16,7 +16,7 @@ mongoose.models.ExampleFileUser || mongoose.model(
 
 async function main() {
   db.config({
-    file: path.join(__dirname, "data", "kilic.db.json"),
+    file: path.join(__dirname, "data", "example.kd"),
     database: "kilic_example",
   });
 

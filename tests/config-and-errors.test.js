@@ -19,8 +19,8 @@ test("ready explains when the database has not been configured", async () => {
 });
 
 test("active connections reject switching to another database target", async () => {
-  const first = await tempFile("first.json");
-  const second = await tempFile("second.json");
+  const first = await tempFile("first.kd");
+  const second = await tempFile("second.kd");
 
   defineModel(uniqueName("ConflictUser"), "conflict_users", {
     id: String,
@@ -36,8 +36,8 @@ test("active connections reject switching to another database target", async () 
 });
 
 test("invalid file stores keep their specific error and the next config can recover", async () => {
-  const bad = await tempFile("bad.json");
-  const good = await tempFile("good.json");
+  const bad = await tempFile("bad.kd");
+  const good = await tempFile("good.kd");
   const modelName = uniqueName("RecoverUser");
   const collectionName = "recover_users";
 

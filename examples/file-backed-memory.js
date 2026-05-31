@@ -1,21 +1,17 @@
 const path = require("node:path");
-const mongoose = require("mongoose");
 const db = require("../dist");
 
-mongoose.models.ExampleFileUser || mongoose.model(
-  "ExampleFileUser",
-  new mongoose.Schema({
-    id: { type: String, unique: true },
-    email: String,
-    loginCount: Number,
-  }, {
-    collection: "example_file_users",
-    versionKey: false,
-  })
-);
+new db.model("ExampleFileUser", {
+  id: { type: String, unique: true },
+  email: String,
+  loginCount: Number,
+}, {
+  collection: "example_file_users",
+});
 
 async function main() {
   db.config({
+    type: "local",
     file: path.join(__dirname, "data", "example.kd"),
     database: "kilic_example",
   });

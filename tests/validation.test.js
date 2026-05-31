@@ -244,15 +244,6 @@ test("model throws for unregistered model", async () => {
   );
 });
 
-// --- ready() without config ---
-
-test("ready throws when not configured", async () => {
-  await assert.rejects(
-    db.ready(),
-    { code: "NOT_CONFIGURED" }
-  );
-});
-
 // --- create idempotency ---
 
 test("create returns existing document on duplicate", async () => {

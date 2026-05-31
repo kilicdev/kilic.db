@@ -1,20 +1,16 @@
 const path = require("node:path");
-const mongoose = require("mongoose");
 const db = require("../dist");
 
-mongoose.models.ExampleAccount || mongoose.model(
-  "ExampleAccount",
-  new mongoose.Schema({
-    id: { type: String, unique: true },
-    balance: Number,
-  }, {
-    collection: "example_accounts",
-    versionKey: false,
-  })
-);
+new db.model("ExampleAccount", {
+  id: { type: String, unique: true },
+  balance: Number,
+}, {
+  collection: "example_accounts",
+});
 
 async function main() {
   db.config({
+    type: "local",
     file: path.join(__dirname, "data", "transactions.kd"),
     database: "kilic_transactions",
   });

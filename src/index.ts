@@ -1,5 +1,3 @@
-import type mongooseType from "mongoose";
-import type { Connection, Model, PipelineStage } from "mongoose";
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as nodePath from "path";
@@ -7,6 +5,7 @@ import {
   AggregateOptions,
   BackupOptions,
   BackupResult,
+  DatabaseType,
   CountOptions,
   CreateOptions,
   Data,
@@ -16,22 +15,25 @@ import {
   FilterResolver,
   FindOptions,
   GetOptions,
+  KilicConfigContinuation,
   KilicDBConfig,
+  KilicModelAccessor,
+  ModelSchemaDefinition,
   UpdateOptions,
   UpdateResult,
 } from "./types";
 import { KilicError, handleError } from "./errors";
 
 const KD_EXTENSION = ".kd";
+const LOCAL_TYPE: DatabaseType = "local";
+const SERVER_TYPE: DatabaseType = "server";
 
-// No longer top-level functions
-// function getDefaultFileStorePath(cwd: string = process.cwd()): string {
-//   return nodePath.join(cwd, "datas.kd");
-// }
+const continueAfterConfig: KilicConfigContinuation = <T>(value: T): T => value;
 
-// function getDefaultDatabaseName(): string {
-//   return "kilicdb";
-// }
+type MongooseInstance = any;
+type Connection = any;
+type Model<T = any> = any;
+type PipelineStage = Record<string, any>;
 
 type MongoMemoryServerLike = {
   getUri(dbName?: string): string;
@@ -45,14 +47,14 @@ type FileStoreSnapshot = {
   collections?: Record<string, any[]>;
 };
 
-function loadMongoose(): typeof mongooseType {
+function loadMongoose(): MongooseInstance {
   try {
-    return require("mongoose") as typeof mongooseType;
+    return require("mongoose") as MongooseInstance;
   } catch (err: any) {
     if (err?.code === "MODULE_NOT_FOUND" && err?.message?.includes("'mongoose'")) {
-      throw new KilicError("Missing peer dependency 'mongoose'.", {
-        code: "MISSING_PEER_DEPENDENCY",
-        hint: "Install it in your project with: npm install mongoose",
+      throw new KilicError("Missing optional dependency 'mongoose'.", {
+        code: "MISSING_OPTIONAL_DEPENDENCY",
+        hint: "Install kilic.db with optional dependencies enabled, or run: npm install mongoose",
         originalError: err,
       });
     }
@@ -65,6 +67,7 @@ const mongoose = loadMongoose();
 
 class KilicDB {
   #config: KilicDBConfig = {};
+  #hasConfigured = false;
   #cache: Map<string, Model<any>> = new Map();
   #connectionPromise?: Promise<Connection>;
   #memoryServer?: MongoMemoryServerLike;
@@ -74,6 +77,27 @@ class KilicDB {
   #removeDisconnectedListener?: () => void;
   #patchedSessions: WeakSet<object> = new WeakSet();
   #shutdownBound?: () => void;
+  #shuttingDown = false;
+
+  public readonly model: KilicModelAccessor;
+
+  public constructor() {
+    const owner = this;
+    const modelAccessor = function <T = any>(
+      this: unknown,
+      modelName: string,
+      definition?: ModelSchemaDefinition<T>,
+      options?: Record<string, any>
+    ): Model<T> {
+      if (new.target || arguments.length > 1) {
+        return owner.#defineModel<T>(modelName, definition, options);
+      }
+
+      return owner.#resolveModel<T>(modelName);
+    };
+
+    this.model = modelAccessor as unknown as KilicModelAccessor;
+  }
 
   /**
    * Raw Mongoose instance for sessions, plugins, transactions, and advanced APIs.
@@ -94,12 +118,14 @@ class KilicDB {
    * If `url` is omitted, kilic.db starts a local mongodb-memory-server-core replica set
    * and persists data to the configured file store.
    */
-  public config(options: KilicDBConfig): void {
-    const previousPath = this.#config.path;
+  public config(options: KilicDBConfig = {}): KilicConfigContinuation {
+    this.#assertConfigOptions(options);
+
+    const previousCollections = this.#modelDirectory(this.#config);
     const state = mongoose.connection.readyState;
     const active = state === 1 || state === 2 || Boolean(this.#connectionPromise);
     const baseConfig = active ? this.#config : {};
-    const nextConfig = { ...baseConfig, ...options };
+    const nextConfig = this.#normalizeConfig({ ...baseConfig, ...options });
 
     if (
       active &&
@@ -112,19 +138,25 @@ class KilicDB {
     }
 
     this.#config = nextConfig;
+    this.#hasConfigured = true;
 
-    if (options.path && options.path !== previousPath) {
+    if (this.#modelDirectory(this.#config) !== previousCollections) {
       this.#cache.clear();
     }
 
     if (active) {
       this.#log("Already connected or connecting. Skipping duplicate connection.");
-      return;
+      return continueAfterConfig;
     }
 
+    this.#shuttingDown = false;
     mongoose.set("strictQuery", true);
 
-    const connect = (this.#config.url ? this.#connectToMongoDB() : this.#connectToFileStore())
+    if (this.#config.type === LOCAL_TYPE) {
+      this.#registerShutdownHook();
+    }
+
+    const connect = (this.#config.type === SERVER_TYPE ? this.#connectToMongoDB() : this.#connectToFileStore())
       .catch((err: any) => {
         this.#connectionPromise = undefined;
         if (err instanceof KilicError) {
@@ -143,6 +175,7 @@ class KilicDB {
 
     this.#connectionPromise = connect;
     void connect.catch(() => undefined);
+    return continueAfterConfig;
   }
 
   /**
@@ -152,10 +185,11 @@ class KilicDB {
     if (mongoose.connection.readyState === 1) return mongoose.connection;
 
     if (!this.#connectionPromise) {
-      throw new KilicError(
-        "Database is not configured. Call db.config({ url }) or db.config({ file }) first.",
-        "NOT_CONFIGURED"
-      );
+      this.config(this.#hasConfigured ? this.#config : {});
+    }
+
+    if (!this.#connectionPromise) {
+      throw new KilicError("Database connection did not start.", "CONNECTION_NOT_STARTED");
     }
 
     return this.#connectionPromise;
@@ -177,7 +211,7 @@ class KilicDB {
     const pendingConnection = this.#connectionPromise;
 
     try {
-      if (pendingConnection && mongoose.connection.readyState !== 1) {
+      if (pendingConnection && mongoose.connection.readyState !== 1 && !this.#shuttingDown) {
         await pendingConnection.catch(() => undefined);
       }
 
@@ -185,22 +219,23 @@ class KilicDB {
         await this.#persistFileStore();
       }
     } finally {
-      await mongoose.disconnect().catch(() => undefined);
-      while (mongoose.connection.readyState !== 0) {
-        await new Promise((r) => setTimeout(r, 10));
-      }
       this.#removeDisconnectedListener?.();
+      const connectingDuringShutdown = this.#shuttingDown && mongoose.connection.readyState !== 1;
+
+      if (connectingDuringShutdown) {
+        void mongoose.disconnect().catch(() => undefined);
+      } else {
+        await mongoose.disconnect().catch(() => undefined);
+        while (mongoose.connection.readyState !== 0) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      }
+
       this.#removeShutdownHook();
       await this.#stopMemoryServer().catch(() => undefined);
       this.#connectionPromise = undefined;
+      this.#shuttingDown = false;
     }
-  }
-
-  /**
-   * Retrieve a raw Mongoose model.
-   */
-  public model<T = any>(modelName: string): Model<T> {
-    return this.#resolveModel<T>(modelName);
   }
 
   /**
@@ -284,16 +319,16 @@ class KilicDB {
       this.#assertNonEmptyArray(data, "create() data");
       this.#assertFilterArrayLength(data, options.filter, "create()");
       const docs = this.#sessionInTransaction(options.session)
-        ? await this.#mapSequential(data, (item, index) => this.#createOne(modelName, model, item, options, index))
+        ? await this.#mapSequential(data, (item, index) => this.#createOne<T>(modelName, model, item, options, index))
         : await Promise.all(
-            data.map((item, index) => this.#createOne(modelName, model, item, options, index))
+            data.map((item, index) => this.#createOne<T>(modelName, model, item, options, index))
           );
       const result = docs.filter((doc) => doc !== null) as T[];
       await this.#persistAfterWrite(options.session);
       return result;
     }
 
-    const result = await this.#createOne(modelName, model, data, options);
+    const result = await this.#createOne<T>(modelName, model, data, options);
     await this.#persistAfterWrite(options.session);
     return result;
   }
@@ -356,9 +391,9 @@ class KilicDB {
       this.#assertNonEmptyArray(data, "update() data");
       this.#assertFilterArrayLength(data, filter as FilterResolver | undefined, "update()");
       result = this.#sessionInTransaction(options.session)
-        ? await this.#mapSequential(data, (item, index) => this.#updateOne(modelName, model, item, filter as FilterResolver | undefined, options, index))
+        ? await this.#mapSequential(data, (item, index) => this.#updateOne<T>(modelName, model, item, filter as FilterResolver | undefined, options, index))
         : await Promise.all(
-            data.map((item, index) => this.#updateOne(modelName, model, item, filter as FilterResolver | undefined, options, index))
+            data.map((item, index) => this.#updateOne<T>(modelName, model, item, filter as FilterResolver | undefined, options, index))
           );
       await this.#persistAfterWrite(options.session);
       return result;
@@ -370,7 +405,7 @@ class KilicDB {
       return result;
     }
 
-    result = await this.#updateOne(modelName, model, data, filter as Filter | undefined, options);
+    result = await this.#updateOne<T>(modelName, model, data, filter as Filter | undefined, options);
     await this.#persistAfterWrite(options.session);
     return result;
   }
@@ -483,12 +518,12 @@ class KilicDB {
 
     try {
       const { session, ...aggregateOptions } = options;
-      let aggregate = model.aggregate<T>(stages);
+      let aggregate = model.aggregate(stages);
       aggregate = aggregate.option(aggregateOptions);
       if (session) aggregate = aggregate.session(session);
       const result = await aggregate.exec();
       if (this.#aggregateWrites(stages)) await this.#persistAfterWrite(session);
-      return result;
+      return result as T[];
     } catch (err) {
       handleError(err);
     }
@@ -503,13 +538,15 @@ class KilicDB {
 
   async #connectToFileStore(): Promise<Connection> {
     const filePath = this.#fileStoreFilePath();
+    await this.#cleanupFileStoreTempFiles(filePath);
     const snapshot = await this.#readFileStoreSnapshot(filePath);
     const database = this.#fileStoreDatabaseName(snapshot);
-      const { MongoMemoryReplSet } = this.#loadMongoMemoryServer();
+    const { MongoMemoryReplSet } = this.#loadMongoMemoryServer();
     let memoryServer: MongoMemoryServerLike | undefined;
 
     try {
       this.#config = { ...this.#config, file: filePath, database };
+      this.#registerShutdownHook();
       memoryServer = await MongoMemoryReplSet.create(this.#config.memoryServerOptions ?? {});
       this.#memoryServer = memoryServer;
       this.#fileStorePath = filePath;
@@ -520,11 +557,11 @@ class KilicDB {
       await this.#initRegisteredModels();
       await this.#persistFileStore();
 
-      this.#registerShutdownHook();
       this.#log(`Connected to file-backed MongoDB memory server at ${filePath}.`);
       return mongoose.connection;
     } catch (err) {
       this.#removeDisconnectedListener?.();
+      this.#removeShutdownHook();
       await mongoose.disconnect().catch(() => undefined);
       this.#memoryServer = undefined;
       this.#fileStorePath = undefined;
@@ -640,7 +677,7 @@ class KilicDB {
     const listener = () => {
       this.#connectionPromise = undefined;
       this.#removeDisconnectedListener = undefined;
-      if (stopMemoryServer) {
+      if (stopMemoryServer && !this.#shuttingDown) {
         void this.#stopMemoryServer().catch((err) => {
           this.#log(`Could not stop memory server: ${err?.message ?? err}`);
         });
@@ -658,6 +695,9 @@ class KilicDB {
     this.#removeShutdownHook();
 
     const handler = () => {
+      if (this.#shuttingDown) return;
+      this.#shuttingDown = true;
+
       void this.disconnect()
         .catch(() => undefined)
         .finally(() => process.exit(0));
@@ -676,10 +716,126 @@ class KilicDB {
     }
   }
 
+  #normalizeConfig(config: KilicDBConfig): KilicDBConfig {
+    const type = this.#normalizeDatabaseType(config);
+    const collections = this.#normalizeCollectionsPath(config);
+    const url = this.#optionalNonEmptyString(config.url, "url");
+    const file = this.#optionalNonEmptyString(config.file, "file");
+    const cwd = this.#optionalNonEmptyString(config.cwd, "cwd");
+    const backupDir = this.#optionalNonEmptyString(config.backupDir, "backupDir");
+    const database = this.#optionalNonEmptyString(config.database, "database");
+
+    if (type === SERVER_TYPE) {
+      if (!url) {
+        throw new KilicError("Server database mode requires a MongoDB connection URL.", {
+          code: "INVALID_CONFIG",
+          hint: "Use db.config({ type: 'server', url: 'mongodb://127.0.0.1:27017/myapp' }) or switch to type: 'local'.",
+        });
+      }
+    }
+
+    if (type === LOCAL_TYPE && config.url) {
+      throw new KilicError("Local database mode cannot be combined with a MongoDB URL.", {
+        code: "INVALID_CONFIG",
+        hint: "Remove `url`, or use db.config({ type: 'server', url }).",
+      });
+    }
+
+    return {
+      ...config,
+      ...(url ? { url } : {}),
+      ...(file ? { file } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(backupDir ? { backupDir } : {}),
+      ...(database ? { database } : {}),
+      type,
+      ...(collections ? { collections } : {}),
+    };
+  }
+
+  #assertConfigOptions(options: unknown): asserts options is KilicDBConfig {
+    if (!this.#isPlainObject(options)) {
+      throw new KilicError("config() options must be a plain object.", {
+        code: "INVALID_CONFIG",
+        hint: "Use db.config({ type: 'local' }) or db.config({ type: 'server', url }).",
+      });
+    }
+  }
+
+  #isPlainObject(value: unknown): value is Record<string, any> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
+  #optionalNonEmptyString(value: unknown, key: string): string | undefined {
+    if (value === undefined) return undefined;
+
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new KilicError(`config.${key} must be a non-empty string.`, {
+        code: "INVALID_CONFIG",
+        hint: `Remove ${key}, or pass a valid string value.`,
+        details: { option: key },
+      });
+    }
+
+    return value;
+  }
+
+  #normalizeDatabaseType(config: KilicDBConfig): DatabaseType {
+    if (config.type !== undefined && config.type !== LOCAL_TYPE && config.type !== SERVER_TYPE) {
+      throw new KilicError("Invalid database type.", {
+        code: "INVALID_CONFIG",
+        hint: "Use `type: 'local'` or `type: 'server'`.",
+        details: { type: String(config.type) },
+      });
+    }
+
+    return config.type ?? (config.url ? SERVER_TYPE : LOCAL_TYPE);
+  }
+
+  #normalizeCollectionsPath(config: KilicDBConfig): string | undefined {
+    const collections = this.#optionalNonEmptyString(config.collections, "collections");
+    const legacyPath = this.#optionalNonEmptyString(config.path, "path");
+
+    if (collections && legacyPath) {
+      const resolvedCollections = this.#resolveConfigPath(collections, config);
+      const resolvedLegacyPath = this.#resolveConfigPath(legacyPath, config);
+      if (resolvedCollections !== resolvedLegacyPath) {
+        throw new KilicError("`collections` and deprecated `path` point to different directories.", {
+          code: "INVALID_CONFIG",
+          hint: "Use only `collections` in db.config().",
+          details: {
+            collections: resolvedCollections,
+            path: resolvedLegacyPath,
+          },
+        });
+      }
+
+      return resolvedCollections;
+    }
+
+    const modelDirectory = collections ?? legacyPath;
+    return modelDirectory ? this.#resolveConfigPath(modelDirectory, config) : undefined;
+  }
+
+  #modelDirectory(config: KilicDBConfig = this.#config): string | undefined {
+    return config.collections ?? config.path;
+  }
+
+  #resolveConfigPath(value: string, config: KilicDBConfig = this.#config): string {
+    const base = config.cwd ?? process.cwd();
+    return nodePath.isAbsolute(value)
+      ? nodePath.resolve(value)
+      : nodePath.resolve(base, value);
+  }
+
   #connectionKey(config: KilicDBConfig): string {
-    if (config.url) return `url:${config.url}`;
-    const filePath = this.#ensureKdExtension(nodePath.resolve(config.file ?? this.#getDefaultFileStorePathForConfig(config)));
-    return `file:${filePath}:${config.database ?? ""}`;
+    const type = config.type ?? (config.url ? SERVER_TYPE : LOCAL_TYPE);
+    if (type === SERVER_TYPE) return `server:${config.url ?? ""}`;
+
+    const filePath = this.#ensureKdExtension(this.#resolveConfigPath(config.file ?? this.#getDefaultFileStorePathForConfig(config), config));
+    return `local:${filePath}:${config.database ?? ""}`;
   }
 
   #getDefaultFileStorePathForConfig(config: KilicDBConfig): string {
@@ -697,7 +853,7 @@ class KilicDB {
       if (err?.code === "MODULE_NOT_FOUND" && err?.message?.includes("mongodb-memory-server-core")) {
         throw new KilicError("Missing dependency 'mongodb-memory-server-core'.", {
           code: "MISSING_DEPENDENCY",
-          hint: "Install it with: npm install mongodb-memory-server-core",
+          hint: "Install kilic.db with optional dependencies enabled, or run: npm install mongodb-memory-server-core",
           originalError: err,
         });
       }
@@ -708,7 +864,7 @@ class KilicDB {
 
   #fileStoreFilePath(): string {
     const raw = this.#config.file ?? this.#getDefaultFileStorePath();
-    const resolved = this.#ensureKdExtension(nodePath.resolve(raw));
+    const resolved = this.#ensureKdExtension(this.#resolveConfigPath(raw));
     return resolved;
   }
 
@@ -793,7 +949,7 @@ class KilicDB {
   }
 
   async #initRegisteredModels(): Promise<void> {
-    const models = Object.values(mongoose.models);
+    const models = Object.values(mongoose.models) as Array<Model<any>>;
 
     for (const model of models) {
       await model.init().catch((err: any) => {
@@ -874,6 +1030,30 @@ class KilicDB {
     this.#patchedSessions.add(session);
   }
 
+  async #cleanupFileStoreTempFiles(filePath: string): Promise<void> {
+    const directory = nodePath.dirname(filePath);
+    const basename = nodePath.basename(filePath);
+    const prefix = `.${basename}.`;
+
+    try {
+      const entries = await fsp.readdir(directory);
+      await Promise.all(
+        entries
+          .filter((entry) => entry.startsWith(prefix) && entry.endsWith(".tmp"))
+          .map((entry) => fsp.rm(nodePath.join(directory, entry), { force: true }))
+      );
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") {
+        throw new KilicError("Could not clean stale file-backed database temp files.", {
+          code: "FILE_STORE_TEMP_CLEANUP_FAILED",
+          hint: "Check that the configured db.config({ file }) directory is readable and writable.",
+          details: { directory },
+          originalError: err,
+        });
+      }
+    }
+  }
+
   async #writeFileStoreSnapshot(): Promise<void> {
     const db = mongoose.connection.db;
     const filePath = this.#fileStorePath;
@@ -881,13 +1061,17 @@ class KilicDB {
 
     const directory = nodePath.dirname(filePath);
     const tempFile = nodePath.join(directory, `.${nodePath.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+    let stream: fs.WriteStream | undefined;
+    let renamed = false;
 
     try {
       await fsp.mkdir(directory, { recursive: true });
+      await this.#cleanupFileStoreTempFiles(filePath);
       const collectionNames = await this.#collectionNames();
 
-      const stream = fs.createWriteStream(tempFile, { encoding: "utf-8" });
-      const write = (content: string) => this.#streamWrite(stream, content);
+      stream = fs.createWriteStream(tempFile, { encoding: "utf-8" });
+      const activeStream = stream;
+      const write = (content: string) => this.#streamWrite(activeStream, content);
 
       await write(`{\n  "version": 1,\n  "database": ${JSON.stringify(db.databaseName)},\n  "updatedAt": ${JSON.stringify(new Date().toISOString())},\n  "collections": {\n`);
 
@@ -912,12 +1096,14 @@ class KilicDB {
       await write("\n  }\n}\n");
 
       await new Promise<void>((resolve, reject) => {
-        stream.on("error", reject);
-        stream.end(() => resolve());
+        activeStream.on("error", reject);
+        activeStream.end(() => resolve());
       });
 
       await fsp.rename(tempFile, filePath);
+      renamed = true;
     } catch (err) {
+      stream?.destroy();
       await fsp.rm(tempFile, { force: true }).catch(() => undefined);
       throw new KilicError("Could not write file-backed database store.", {
         code: "FILE_STORE_WRITE_FAILED",
@@ -925,6 +1111,10 @@ class KilicDB {
         details: { file: filePath },
         originalError: err,
       });
+    } finally {
+      if (!renamed) {
+        await fsp.rm(tempFile, { force: true }).catch(() => undefined);
+      }
     }
   }
 
@@ -982,9 +1172,9 @@ class KilicDB {
 
     const collections = await db.listCollections({}, { nameOnly: true }).toArray();
     return collections
-      .map((item) => String(item?.name || "").trim())
-      .filter((name) => name && !name.startsWith("system."))
-      .sort((a, b) => a.localeCompare(b));
+      .map((item: any) => String(item?.name || "").trim())
+      .filter((name: string) => name && !name.startsWith("system."))
+      .sort((a: string, b: string) => a.localeCompare(b));
   }
 
   async #dumpCollection(collectionName: string, dumpDir: string, batchSize = 200): Promise<{ collection: string; count: number; file: string }> {
@@ -1054,7 +1244,7 @@ class KilicDB {
       if (err?.code === "MODULE_NOT_FOUND" && err?.message?.includes("archiver")) {
         throw new KilicError("Missing dependency 'archiver'.", {
           code: "MISSING_DEPENDENCY",
-          hint: "Install it with: npm install archiver",
+          hint: "Install kilic.db with optional dependencies enabled, or run: npm install archiver",
           originalError: err,
         });
       }
@@ -1100,10 +1290,39 @@ class KilicDB {
     return safeName || "collection";
   }
 
-  #resolveModel<T = any>(modelName: string): Model<T> {
-    if (!modelName || typeof modelName !== "string") {
-      throw new KilicError("Model name must be a non-empty string.", "INVALID_MODEL_NAME");
+  #defineModel<T = any>(
+    modelName: string,
+    definition: ModelSchemaDefinition<T> | undefined,
+    options?: Record<string, any>
+  ): Model<T> {
+    this.#assertModelName(modelName);
+
+    if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
+      throw new KilicError("Model schema definition must be a plain object or a Mongoose Schema.", {
+        code: "INVALID_MODEL_SCHEMA",
+        hint: "Use new db.model('Name', { id: String, name: String }).",
+      });
     }
+
+    const registeredModel = mongoose.models[modelName];
+    if (registeredModel) {
+      this.#cache.set(modelName, registeredModel);
+      return registeredModel as Model<T>;
+    }
+
+    const schema = definition instanceof mongoose.Schema
+      ? definition
+      : new mongoose.Schema(definition as any, {
+          versionKey: false,
+          ...options,
+        });
+    const model = mongoose.model(modelName, schema) as Model<T>;
+    this.#cache.set(modelName, model);
+    return model;
+  }
+
+  #resolveModel<T = any>(modelName: string): Model<T> {
+    this.#assertModelName(modelName);
 
     if (this.#cache.has(modelName)) {
       return this.#cache.get(modelName) as Model<T>;
@@ -1115,7 +1334,7 @@ class KilicDB {
       return registeredModel as Model<T>;
     }
 
-    if (this.#config.path) {
+    if (this.#modelDirectory()) {
       const filePath = this.#findModelFile(modelName);
       if (filePath) {
         const model = this.#loadModel<T>(modelName, filePath);
@@ -1125,16 +1344,16 @@ class KilicDB {
     }
 
     throw new KilicError(
-      `Model '${modelName}' not found. Register it with mongoose.model() or set db.config({ path }).`,
+      `Model '${modelName}' not found. Register it with new db.model() or set db.config({ collections }).`,
       "MODEL_NOT_FOUND"
     );
   }
 
   #findModelFile(modelName: string): string | null {
-    const basePath = this.#config.path;
+    const basePath = this.#modelDirectory();
     if (!basePath) return null;
 
-    const resolvedBasePath = nodePath.resolve(basePath);
+    const resolvedBasePath = this.#resolveConfigPath(basePath);
     const candidates = [
       `${modelName}.js`,
       `${modelName}.cjs`,
@@ -1155,7 +1374,7 @@ class KilicDB {
 
       if (!loaded || typeof loaded.findOne !== "function") {
         throw new KilicError(
-          `Model file '${filePath}' did not export a Mongoose model.`,
+          `Collection file '${filePath}' did not export a kilic.db model.`,
           "INVALID_MODEL_EXPORT"
         );
       }
@@ -1164,12 +1383,33 @@ class KilicDB {
       return loaded as Model<T>;
     } catch (err: any) {
       if (err instanceof KilicError) throw err;
+
+      if (err?.code === "MODULE_NOT_FOUND" && this.#missingModuleName(err) === "mongoose") {
+        throw new KilicError(`Collection '${modelName}' requires mongoose but it is not installed in the user's project.`, {
+          code: "MODEL_DEPENDENCY_MISSING",
+          hint: "Use `const db = require('kilic.db'); module.exports = new db.model('Name', schema);` inside the collection file, or install mongoose in the project.",
+          details: { file: filePath, dependency: "mongoose" },
+          originalError: err,
+        });
+      }
+
       throw new KilicError(
         `Failed to load model '${modelName}' from ${filePath}: ${err?.message ?? err}`,
         "MODEL_LOAD_ERROR",
         err
       );
     }
+  }
+
+  #assertModelName(modelName: unknown): asserts modelName is string {
+    if (!modelName || typeof modelName !== "string") {
+      throw new KilicError("Model name must be a non-empty string.", "INVALID_MODEL_NAME");
+    }
+  }
+
+  #missingModuleName(err: any): string | undefined {
+    const match = String(err?.message ?? "").match(/Cannot find module ['"]([^'"]+)['"]/);
+    return match?.[1];
   }
 
   #filterFromData(

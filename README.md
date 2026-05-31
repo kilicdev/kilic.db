@@ -2,7 +2,7 @@
 
 # kilic.db
 
-### Tiny MongoDB commands for Node.js projects that already love Mongoose.
+### Tiny MongoDB commands for Node.js projects.
 
 [![npm version](https://img.shields.io/npm/v/kilic.db.svg?style=for-the-badge)](https://www.npmjs.com/package/kilic.db)
 [![npm downloads](https://img.shields.io/npm/dm/kilic.db.svg?style=for-the-badge)](https://www.npmjs.com/package/kilic.db)
@@ -18,7 +18,7 @@ Configure once. Query everywhere. Keep the API small. Keep MongoDB powerful.
 
 ## Overview
 
-`kilic.db` is a compact command layer over Mongoose. It gives everyday database work a clean shape without hiding the native MongoDB/Mongoose escape hatches.
+`kilic.db` is a compact command layer over Mongoose. It gives everyday database work a clean shape while keeping native MongoDB/Mongoose escape hatches nearby.
 
 ```js
 const db = require("kilic.db");
@@ -49,15 +49,12 @@ const revenue = await db.aggregate("Order", [
 ## Install
 
 ```bash
-npm install kilic.db mongoose
+npm install kilic.db
 ```
 
 Node.js `20.19.0` or newer is required.
 
-`mongoose` is a peer dependency, so your app owns the actual Mongoose version.
-
-`archiver` is installed with `kilic.db` and is used internally by `db.backup()`.
-`mongodb-memory-server-core` is also installed with `kilic.db`; it is loaded only when you omit `url`.
+`mongoose`, `archiver`, and `mongodb-memory-server-core` are optional dependencies installed with `kilic.db` by default. If your package manager skips optional dependencies, install them explicitly or reinstall with optional dependencies enabled.
 
 ## Configure
 
@@ -66,8 +63,9 @@ const db = require("kilic.db");
 const path = require("path");
 
 db.config({
+  type: "server",
   url: "mongodb://localhost:27017/myapp",
-  path: path.join(__dirname, "models"),
+  collections: path.join(__dirname, "collections"),
   backupDir: path.join(__dirname, "backups"),
   debug: true,
 });
@@ -75,17 +73,18 @@ db.config({
 
 `config()` starts the connection in the background. Mongoose buffers commands while the connection is opening.
 
-No MongoDB server? Omit `url`. kilic.db starts a local one-node `mongodb-memory-server-core` replica set, loads the `.kd` data file into MongoDB, and writes changes back to the same file after kilic.db write commands:
+No MongoDB server? Use local mode, or omit config entirely. kilic.db starts a local one-node `mongodb-memory-server-core` replica set, loads the `.kd` data file into MongoDB, and writes changes back to the same file after kilic.db write commands:
 
 ```js
 db.config({
+  type: "local",
   file: path.join(__dirname, "data", "myapp.kd"),
   database: "myapp",
-  path: path.join(__dirname, "models"),
+  collections: path.join(__dirname, "collections"),
 });
 ```
 
-If `file` is omitted, kilic.db creates `<cwd>/datas.kd`. The `.kd` extension is enforced automatically — any other extension is replaced. The file uses MongoDB EJSON internally, so ObjectIds, dates, and other BSON values can round-trip safely.
+If `file` is omitted, kilic.db creates `<cwd>/datas.kd`. If `db.config()` is never called, the first command uses local mode with that default file. The `.kd` extension is enforced automatically — any other extension is replaced. The file uses MongoDB EJSON internally, so ObjectIds, dates, and other BSON values can round-trip safely.
 
 The memory mode uses `mongodb-memory-server-core`, so it does not download a MongoDB binary during package install. The first URL-free run may download the `mongod` binary into the user's MongoDB Memory Server cache unless `MONGOMS_SYSTEM_BINARY` or other MongoDB Memory Server config points to an existing binary.
 
@@ -95,13 +94,25 @@ Need an explicit boot barrier?
 await db.ready();
 ```
 
+When an immediately invoked function expression follows `db.config()` on the next line, prefer a semicolon. `config()` is ASI-safe, but explicit semicolons keep plain JavaScript easier to read:
+
+```js
+db.config({ file: "datas", collections: "./collections" });
+
+(async () => {
+  await db.create("User", { id: "u_1" });
+})();
+```
+
 Config options:
 
 | Option | Type | Purpose |
 |---|---|---|
+| `type` | `"local" \| "server"` | Database mode. Defaults to `server` when `url` exists, otherwise `local` |
 | `url` | `string` | MongoDB connection string |
 | `options` | `ConnectOptions` | Options passed to `mongoose.connect()` |
-| `path` | `string` | Directory for auto-loading model files |
+| `collections` | `string` | Directory for auto-loading collection/model files |
+| `path` | `string` | Deprecated alias for `collections` |
 | `file` | `string` | JSON file for built-in memory-server persistence when `url` is omitted |
 | `database` | `string` | Database name for built-in memory-server mode |
 | `memoryServerOptions` | `object` | Options passed to `MongoMemoryReplSet.create()` |
@@ -112,7 +123,7 @@ Config options:
 
 | Command | Reads like | Supports |
 |---|---|---|
-| `config(options)` | connect and configure | `url`, `file`, `path`, Mongoose connect options |
+| `config(options)` | connect and configure | `type`, `url`, `file`, `collections`, Mongoose connect options |
 | `ready()` | wait for connection | startup checks |
 | `flush()` | write file-backed data now | memory-server mode |
 | `disconnect()` | flush and close | scripts, tests, shutdown |
@@ -124,7 +135,7 @@ Config options:
 | `count(model, filter?, options?)` | count many | filtered counts |
 | `aggregate(model, stages, options?)` | run pipeline | full MongoDB aggregation |
 | `backup(options?)` | zip a database backup | EJSON collection dumps, metadata, dated zip files |
-| `model(model)` | escape hatch | raw Mongoose model access |
+| `model(model, schema?)` | define or retrieve a model | kilic.db schemas, raw Mongoose model access |
 
 ---
 
@@ -496,30 +507,41 @@ Releases are automated from `main`: when tests pass and the `package.json` versi
 
 ## Models
 
-Register models yourself:
+Define collections with kilic.db:
 
 ```js
-mongoose.model("User", userSchema);
+const db = require("kilic.db");
+
+module.exports = new db.model("User", {
+  id: { type: String, unique: true },
+  email: String,
+  name: String,
+  age: Number,
+});
 ```
 
-Or let kilic.db load model files from `config.path`:
+Then point `collections` at the directory:
 
 ```text
-models/
+collections/
   User.js
   Post.js
   Order.js
 ```
 
-Each file should export a Mongoose model:
+Mongoose model exports are still supported for advanced projects:
 
 ```js
+const mongoose = require("mongoose");
+
 module.exports = mongoose.model("User", userSchema);
 ```
 
+If a collection file imports `mongoose` directly, install `mongoose` in the application or switch the file to `new db.model("User", schema)`.
+
 Default exports are supported.
 
-Model names are resolved only inside `config.path`; path traversal strings such as `"../User"` are ignored.
+Model names are resolved only inside `config.collections`; path traversal strings such as `"../User"` are ignored. The old `config.path` name still works as an alias, but `collections` is the preferred option.
 
 ## TypeScript
 

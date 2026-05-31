@@ -5,6 +5,8 @@ Run these from the repository after building:
 ```bash
 npm run build
 node examples/file-backed-memory.js
+node examples/transactions.js
+MONGODB_URI="mongodb://127.0.0.1:27017/kilic_example" node examples/mongodb-url.js
 ```
 
 In an installed application, replace `require("../dist")` with:

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
   id-token: write
 
 concurrency:
@@ -103,3 +104,34 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "$TAG" \
             --generate-notes
+
+      - name: Setup Node.js for GitHub Packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@kilicdev'
+
+      - name: Check GitHub Packages version
+        id: github-package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          PACKAGE_NAME="@kilicdev/$(node -p "require('./package.json').name.replace(/^@[^/]+\//, '')")"
+          echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+
+          if npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$PACKAGE_NAME@$VERSION is already published. Skipping GitHub Packages publish."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to GitHub Packages
+        if: steps.github-package.outputs.published == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm pkg set name="${{ steps.github-package.outputs.name }}"
+          npm publish --registry=https://npm.pkg.github.com --access public
